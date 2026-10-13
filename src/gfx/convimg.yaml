@@ -1,0 +1,55 @@
+# Palette layout matches PAL_* in main.c: indices 0-29 belong to the shell UI
+# (set again at runtime, so themes can change them), 255 is the transparent key.
+# Icons only use the UI colors, so they stay correct when the theme changes.
+palettes:
+  - name: global_palette
+    fixed-entries:
+      - color: {index: 0, r: 60, g: 100, b: 190}   # gradient 0
+      - color: {index: 1, r: 69, g: 101, b: 188}   # gradient 1
+      - color: {index: 2, r: 78, g: 102, b: 187}   # gradient 2
+      - color: {index: 3, r: 88, g: 104, b: 186}   # gradient 3
+      - color: {index: 4, r: 97, g: 105, b: 184}   # gradient 4
+      - color: {index: 5, r: 106, g: 106, b: 183}   # gradient 5
+      - color: {index: 6, r: 116, g: 108, b: 182}   # gradient 6
+      - color: {index: 7, r: 125, g: 109, b: 180}   # gradient 7
+      - color: {index: 8, r: 134, g: 110, b: 179}   # gradient 8
+      - color: {index: 9, r: 144, g: 112, b: 178}   # gradient 9
+      - color: {index: 10, r: 153, g: 113, b: 176}   # gradient 10
+      - color: {index: 11, r: 162, g: 114, b: 175}   # gradient 11
+      - color: {index: 12, r: 172, g: 116, b: 174}   # gradient 12
+      - color: {index: 13, r: 181, g: 117, b: 172}   # gradient 13
+      - color: {index: 14, r: 190, g: 118, b: 171}   # gradient 14
+      - color: {index: 15, r: 200, g: 120, b: 170}   # gradient 15
+      - color: {index: 16, r: 236, g: 236, b: 240}   # bar
+      - color: {index: 17, r: 190, g: 190, b: 198}   # bar line
+      - color: {index: 18, r: 225, g: 225, b: 235}   # dock
+      - color: {index: 19, r: 30, g: 30, b: 34}   # text
+      - color: {index: 20, r: 255, g: 255, b: 255}   # label (white)
+      - color: {index: 21, r: 0, g: 122, b: 255}   # accent
+      - color: {index: 22, r: 255, g: 95, b: 86}   # red
+      - color: {index: 23, r: 255, g: 189, b: 46}   # yellow
+      - color: {index: 24, r: 39, g: 201, b: 63}   # green
+      - color: {index: 25, r: 10, g: 132, b: 255}   # blue
+      - color: {index: 26, r: 191, g: 90, b: 242}   # purple
+      - color: {index: 27, r: 100, g: 210, b: 255}   # cyan
+      - color: {index: 28, r: 255, g: 159, b: 10}   # orange
+      - color: {index: 29, r: 142, g: 142, b: 147}   # gray
+      - color: {index: 255, r: 255, g: 0, b: 255}   # transparent key
+    images: automatic
+
+converts:
+  - name: icons
+    palette: global_palette
+    transparent-color-index: 255
+    images:
+      - icon_files.png
+      - icon_notes.png
+      - icon_settings.png
+
+outputs:
+  - type: c
+    include-file: gfx.h
+    palettes:
+      - global_palette
+    converts:
+      - icons

@@ -1,0 +1,5 @@
+The installer sources in src/ are based on CE-Programming/app_tools:
+https://github.com/CE-Programming/app_tools/tree/0fb268f179725d1727c18720343649460c72e629/installer
+
+The upstream readme permits copying these sources to make a custom installer.
+The upstream README and installer makefile are available at the same commit.
