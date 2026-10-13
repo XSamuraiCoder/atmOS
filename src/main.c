@@ -21,6 +21,7 @@
 #include <ti/vars.h>
 #include "files.h"
 #include "notes.h"
+#include "settings.h"
 #ifndef SHELL_FLASH_APP
 #include <fileioc.h>      /* os_RunPrgm */
 #else
@@ -58,21 +59,9 @@ enum {
     PAL_ICON_COUNT = 8
 };
 
-/* ---------- theme (swap this struct later for a theme picker) ---------- */
-typedef struct { uint8_t r, g, b; } rgb_t;
-typedef struct {
-    rgb_t top, bottom;   /* wallpaper gradient */
-    rgb_t bar, bar_line; /* menu bar */
-    rgb_t dock;
-    rgb_t accent;
-} theme_t;
-
-static const theme_t theme = {
-    {  60, 100, 190 }, { 200, 120, 170 },
-    { 236, 236, 240 }, { 190, 190, 198 },
-    { 225, 225, 235 },
-    {   0, 122, 255 }
-};
+/* ---------- theme (presets live in settings.c; picked in the Settings app) ---------- */
+typedef settings_rgb_t rgb_t;
+typedef settings_theme_t theme_t;
 
 static const rgb_t icon_colors[PAL_ICON_COUNT] = {
     { 255,  95,  86 }, { 255, 189,  46 }, {  39, 201,  63 }, {  10, 132, 255 },
@@ -92,6 +81,7 @@ typedef struct {
 #define APP_PLACEHOLDER 0   /* indices into apps[] */
 #define APP_FILES       1
 #define APP_NOTES       2
+#define APP_SETTINGS    3
 #define ENTRY_NOTES     1   /* dock index of NOTES */
 #define BUILTIN_ENTRY_COUNT 3
 #define MAX_DOCK_ENTRIES (BUILTIN_ENTRY_COUNT + FILES_MAX_PINS)
@@ -99,7 +89,7 @@ typedef struct {
 static entry_t entries[MAX_DOCK_ENTRIES] = {
     { "FILES",   3, 0, APP_FILES, 0, 0 },
     { "NOTES",   1, 0, APP_NOTES, 0, 0 },
-    { "SETTING", 7, 0, APP_PLACEHOLDER, 0, 0 },
+    { "SETTING", 7, 0, APP_SETTINGS, 0, 0 },
 };
 static int entry_count = BUILTIN_ENTRY_COUNT;
 static uint8_t dock_pin_sprites[FILES_MAX_PINS][2 + 16 * 16];
@@ -126,21 +116,22 @@ static void set_pal(int idx, rgb_t c)
 
 static void setup_palette(void)
 {
+    const theme_t *th = settings_theme();
     int i;
     for (i = 0; i < GRAD_STEPS; i++) {
         rgb_t c = {
-            lerp8(theme.top.r, theme.bottom.r, i, GRAD_STEPS),
-            lerp8(theme.top.g, theme.bottom.g, i, GRAD_STEPS),
-            lerp8(theme.top.b, theme.bottom.b, i, GRAD_STEPS)
+            lerp8(th->top.r, th->bottom.r, i, GRAD_STEPS),
+            lerp8(th->top.g, th->bottom.g, i, GRAD_STEPS),
+            lerp8(th->top.b, th->bottom.b, i, GRAD_STEPS)
         };
         set_pal(PAL_GRAD0 + i, c);
     }
-    set_pal(PAL_BAR, theme.bar);
-    set_pal(PAL_BAR_LINE, theme.bar_line);
-    set_pal(PAL_DOCK, theme.dock);
+    set_pal(PAL_BAR, th->bar);
+    set_pal(PAL_BAR_LINE, th->bar_line);
+    set_pal(PAL_DOCK, th->dock);
     set_pal(PAL_TEXT, (rgb_t){ 30, 30, 34 });
     set_pal(PAL_LABEL, (rgb_t){ 255, 255, 255 });
-    set_pal(PAL_ACCENT, theme.accent);
+    set_pal(PAL_ACCENT, th->accent);
     for (i = 0; i < PAL_ICON_COUNT; i++)
         set_pal(PAL_ICON0 + i, icon_colors[i]);
 }
@@ -165,6 +156,7 @@ static void begin_graphics(void)
 static void end_graphics(void)
 {
     notes_flush();
+    settings_flush();
     memset(gfx_vram, 0, GFX_LCD_WIDTH * GFX_LCD_HEIGHT * 2);
     gfx_End();
 }
@@ -220,11 +212,26 @@ static bool bar_tick(void)           /* true when the bar needs a redraw */
 
 static void draw_menu_bar(void)
 {
-    char t[6];
+    char t[9];
     int i, tw, bx;
 
-    t[0] = (char)('0' + (bar_h / 10) % 10); t[1] = (char)('0' + bar_h % 10); t[2] = ':';
-    t[3] = (char)('0' + (bar_min / 10) % 10); t[4] = (char)('0' + bar_min % 10); t[5] = 0;
+    if (settings_clock_24h()) {
+        t[0] = (char)('0' + (bar_h / 10) % 10); t[1] = (char)('0' + bar_h % 10); t[2] = ':';
+        t[3] = (char)('0' + (bar_min / 10) % 10); t[4] = (char)('0' + bar_min % 10); t[5] = 0;
+    } else {
+        uint8_t h12 = bar_h % 12;
+        int k = 0;
+        if (h12 == 0) h12 = 12;
+        if (h12 >= 10) t[k++] = '1';
+        t[k++] = (char)('0' + h12 % 10);
+        t[k++] = ':';
+        t[k++] = (char)('0' + (bar_min / 10) % 10);
+        t[k++] = (char)('0' + bar_min % 10);
+        t[k++] = ' ';
+        t[k++] = bar_h >= 12 ? 'P' : 'A';
+        t[k++] = 'M';
+        t[k] = 0;
+    }
 
     gfx_SetColor(PAL_BAR);
     gfx_FillRectangle(0, 0, GFX_LCD_WIDTH, MENU_H);
@@ -268,6 +275,9 @@ typedef struct {
     bool (*keys)(void);            /* arrows; true = app used them, pointer stays */
     bool (*press)(void);           /* Enter/2nd; true = app handled it */
     void (*draw_region)(int x, int y, int x0, int y0, int x1, int y1);
+    /* optional: screen rectangles (x0,y0,x1,y1) that changed since the last call; the shell
+     * repaints only those. Returns the count, or -1 for "repaint the whole window". */
+    int  (*dirty)(int x, int y, int r[][4], int max);
 } app_t;
 
 static int open_app = -1;          /* index into apps[], or -1 = no window */
@@ -304,11 +314,14 @@ static void run_program(const char *name);
 /* ---------- app table (add new apps here) ---------- */
 static const app_t apps[] = {
     /* NULL title = use the dock entry's name */
-    { NULL, placeholder_draw, NULL, NULL, NULL, NULL, NULL, NULL }, /* APP_PLACEHOLDER */
+    { NULL, placeholder_draw, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, /* APP_PLACEHOLDER */
     { "Files", files_draw, files_click, files_tick, files_hover,
-      files_keys, files_press, files_draw_region },               /* APP_FILES */
+      files_keys, files_press, files_draw_region, NULL },         /* APP_FILES */
     { "Notes", notes_draw, notes_click, NULL, notes_hover,
-      notes_keys, notes_press, NULL },                            /* APP_NOTES */
+      notes_keys, notes_press, NULL, NULL },                      /* APP_NOTES */
+    { "Settings", settings_draw, settings_click, NULL, settings_hover,
+      settings_keys, settings_press, settings_draw_region,
+      settings_dirty },                                           /* APP_SETTINGS */
 };
 
 static bool in_window(void)
@@ -375,6 +388,7 @@ static void launch(const entry_t *e)
         strcpy(status, e->name);
         if (e->app == APP_FILES) files_open();   /* rescan the VAT on open */
         if (e->app == APP_NOTES) notes_open();
+        if (e->app == APP_SETTINGS) settings_open();
         return;
     }
 
@@ -586,6 +600,46 @@ static slot_t slot[2];
 static bool window_dirty[2];
 static int draw_idx = 0;
 
+/* Partial window updates. An app that provides dirty() reports just the rectangles that
+ * changed (a hover highlight, a selected button) instead of the whole window being
+ * repainted. Both draw buffers have to receive every change, so each keeps its own list;
+ * a full-window repaint (window_dirty) overrides the list. */
+#define MAX_DIRTY 6
+typedef struct { int n; int r[MAX_DIRTY][4]; } dirty_list_t;
+static dirty_list_t pending[2];
+
+static void mark_window(void)
+{
+    window_dirty[0] = window_dirty[1] = true;
+    pending[0].n = pending[1].n = 0;
+}
+
+static void mark_rect(int x0, int y0, int x1, int y1)
+{
+    int b;
+    for (b = 0; b < 2; b++) {
+        dirty_list_t *p = &pending[b];
+        if (window_dirty[b]) continue;              /* a full repaint is already queued */
+        if (p->n >= MAX_DIRTY) { window_dirty[b] = true; p->n = 0; continue; }
+        p->r[p->n][0] = x0; p->r[p->n][1] = y0;
+        p->r[p->n][2] = x1; p->r[p->n][3] = y1;
+        p->n++;
+    }
+}
+
+/* ask the open app what changed in its window and queue just that */
+static void collect_app_dirty(void)
+{
+    int r[MAX_DIRTY][4];
+    int n, i;
+
+    if (open_app < 0 || !apps[open_app].dirty) return;
+    n = apps[open_app].dirty(WIN_X, WIN_Y + TITLE_H, r, MAX_DIRTY);
+    if (n < 0) { mark_window(); return; }
+    for (i = 0; i < n; i++)
+        mark_rect(r[i][0], r[i][1], r[i][2], r[i][3]);
+}
+
 static bool overlap(int ax0, int ay0, int ax1, int ay1,
                     int bx0, int by0, int bx1, int by1)
 {
@@ -621,17 +675,26 @@ static void render_frame(int hover, bool dirty)
     if (dirty) {
         slot[0].valid = slot[1].valid = false;
         window_dirty[0] = window_dirty[1] = false;
+        pending[0].n = pending[1].n = 0;
     }
 
     if (!s->valid) {
         draw_scene_region(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT, hover);
         s->valid = true;
         window_dirty[draw_idx] = false;
+        pending[draw_idx].n = 0;
     } else {
         if (window_dirty[draw_idx]) {
             draw_scene_region(WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H,
                               hover);
             window_dirty[draw_idx] = false;
+            pending[draw_idx].n = 0;
+        } else {
+            dirty_list_t *p = &pending[draw_idx];
+            int i;
+            for (i = 0; i < p->n; i++)
+                draw_scene_region(p->r[i][0], p->r[i][1], p->r[i][2], p->r[i][3], hover);
+            p->n = 0;
         }
         draw_scene_region(s->x - 1, s->y - 1, s->x + CUR_W + 1, s->y + CUR_H + 1, hover);
     }
@@ -660,6 +723,8 @@ static void save_keys(void)
 #define PTR_MAX_PXS 240
 #define PTR_RAMP_MS  250
 #define FRAME_HZ     60
+
+static const int32_t ptr_scale[3] = { 6, 10, 16 };   /* slow, normal, fast (tenths) */
 
 static int32_t pos_x = (int32_t)(GFX_LCD_WIDTH  / 2) << PTR_SHIFT;
 static int32_t pos_y = (int32_t)(GFX_LCD_HEIGHT / 2) << PTR_SHIFT;
@@ -711,6 +776,7 @@ static void reset_shell_state(void)
     open_entry = -1;
     memset(slot, 0, sizeof(slot));
     memset(window_dirty, 0, sizeof(window_dirty));
+    memset(pending, 0, sizeof(pending));
     draw_idx = 0;
     memset(prev_keys, 0, sizeof(prev_keys));
     hold = 0;
@@ -733,6 +799,7 @@ static void move_cursor(void)
 
     if (hold < ramp) hold++;
     speed = vmin + (vmax - vmin) * hold / ramp;      /* 1/256 px per second */
+    speed = speed * ptr_scale[settings_pointer_speed()] / 10;   /* Settings: slow/normal/fast */
     step = speed / FRAME_HZ;                         /* 1/256 px this frame */
 
     pos_x += dx * step;
@@ -777,12 +844,14 @@ int main(void)
     bool running = true;
     bool dirty = true;               /* scene changed: both buffers need a full redraw */
     int hover = -1, last_hover = -1;
+    bool was_in_win = false;         /* pointer was over the app window last frame */
 
 #ifdef SHELL_FLASH_APP
     if (!flash_app_libraries_ready()) return 1;
 #endif
 
     reset_shell_state();
+    settings_init();
     begin_graphics();
 #ifdef HAVE_ICONS
     prepare_builtin_dock_icons();
@@ -819,11 +888,21 @@ int main(void)
             if (bar_tick()) dirty = true;
 
             /* let the open app track the pointer (hover highlight, edge scroll) */
-            if (open_app >= 0 && apps[open_app].hover) {
-                if (in_window() &&
-                    apps[open_app].hover(cur_x - WIN_X,
-                                        cur_y - (WIN_Y + TITLE_H)))
-                    window_dirty[0] = window_dirty[1] = true;
+            {
+                bool now_in = open_app >= 0 && in_window();
+                if (open_app >= 0 && apps[open_app].hover) {
+                    if (now_in) {
+                        if (apps[open_app].hover(cur_x - WIN_X,
+                                                 cur_y - (WIN_Y + TITLE_H))) {
+                            if (apps[open_app].dirty) collect_app_dirty();
+                            else mark_window();
+                        }
+                    } else if (was_in_win && apps[open_app].dirty) {
+                        /* pointer left the window: let the app drop its hover highlight */
+                        if (apps[open_app].hover(-1000, -1000)) collect_app_dirty();
+                    }
+                }
+                was_in_win = now_in;
             }
 
             hover = hit_test();
@@ -837,12 +916,23 @@ int main(void)
                 bool on_close = in_window() && cdx * cdx + cdy * cdy <= 36;
                 bool handled = open_app == APP_FILES && files_menu_active() &&
                                files_press();
+                bool full_redraw = true;
+                int app_before = open_app;
                 if (!handled)
                     handled = open_app >= 0 && in_window() && !on_close &&
                               apps[open_app].press && apps[open_app].press();
-                if (!handled)
-                    do_click(hover);
-                dirty = true;
+                {
+                    bool click_in_app = !handled && open_app >= 0 && in_window() &&
+                                        !on_close && cur_y >= WIN_Y + TITLE_H &&
+                                        apps[open_app].dirty;
+                    if (!handled)
+                        do_click(hover);
+                    if (click_in_app && open_app == app_before) {
+                        collect_app_dirty();        /* e.g. the selected button changed */
+                        full_redraw = false;
+                    }
+                }
+                if (full_redraw) dirty = true;
 
                 /* A program was clicked again in Files? */
                 if (open_app == APP_FILES) {
@@ -870,7 +960,11 @@ int main(void)
                 }
 
                 hover = hit_test();
-                dirty = true;
+                if (full_redraw) dirty = true;
+            }
+            if (settings_take_changed()) {          /* theme picked in Settings */
+                setup_palette();                    /* new colors show instantly (8bpp palette) */
+                mark_rect(0, 0, GFX_LCD_WIDTH, MENU_H + 1);   /* clock format may have changed */
             }
             if (hover != last_hover) dirty = true;
             last_hover = hover;
