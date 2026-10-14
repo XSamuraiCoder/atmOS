@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <string.h>
 #include "notes.h"
+#include "settings.h"
+#include "debug_stack.h"
 
 /* palette indices (same as main.c / files.c) */
 enum {
@@ -23,8 +25,8 @@ enum {
 #define WIN_W       304
 #define CONTENT_H   180
 
-#define NOTES_MAX   6
-#define NOTE_CAP    320                 /* bytes of text per note */
+#define NOTES_MAX   5
+#define NOTE_CAP    160                 /* bytes of text per note (RAM is tight) */
 #define STORE_NAME  "SHNOTES"
 
 /* list layout */
@@ -83,10 +85,12 @@ static void load_notes(void)
     if (!h) return;
     if (ti_Read(&count, 1, 1, h) == 1) {
         for (i = 0; i < count && i < NOTES_MAX; i++) {
-            uint16_t len;
-            if (ti_Read(&len, sizeof(len), 1, h) != 1 || len >= NOTE_CAP) break;
-            if (len && ti_Read(notes[i].text, 1, len, h) != len) break;
-            notes[i].len = len;
+            uint16_t len, keep;
+            if (ti_Read(&len, sizeof(len), 1, h) != 1) break;
+            keep = len < NOTE_CAP ? len : NOTE_CAP - 1;      /* older, longer notes are trimmed */
+            if (keep && ti_Read(notes[i].text, 1, keep, h) != keep) break;
+            if (len > keep) ti_Seek(len - keep, SEEK_CUR, h);
+            notes[i].len = keep;
             note_count = (uint8_t)(i + 1);
         }
     }
@@ -358,7 +362,7 @@ static void draw_editor(int x, int y)
         if (++c == COLS) { l++; c = 0; }
         if (l >= top + ROWS) break;
     }
-    gfx_SetMonospaceFont(0);
+    settings_apply_font();      /* back to the font chosen in Settings */
 
     pos_of(n, caret, &cl, &cc);
     if (cl >= top && cl < top + ROWS) {
@@ -389,6 +393,7 @@ static void draw_editor(int x, int y)
 
 void notes_draw(int x, int y)
 {
+    NOTE_STACK();
     gfx_SetTextScale(1, 1);
     if (mode == MODE_EDIT) draw_editor(x, y);
     else draw_list(x, y);

@@ -37,13 +37,6 @@ bool files_load_pin_icon(const files_pin_t *pin, uint8_t pixels[16 * 16])
     return false;
 }
 
-bool files_load_pin_icon(const files_pin_t *pin, uint8_t pixels[16 * 16])
-{
-    (void)pin;
-    (void)pixels;
-    return false;
-}
-
 void files_open(void)
 {
 }
@@ -149,6 +142,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include <stdint.h>
 #include <string.h>
 #include "files.h"
+#include "debug_stack.h"
 
 /* palette indices - must match the enum in main.c */
 enum {
@@ -185,8 +179,8 @@ enum {
 #define NAV_GAP    4
 #define NAV_X0     ((WIN_W - (3 * NAV_W + 2 * NAV_GAP)) / 2)
 
-#define MAX_VARS 120
-#define MAX_APPS 128
+#define MAX_VARS 64     /* RAM: a Flash App only gets ~12 KB for data + stack */
+#define MAX_APPS 24
 #define MAX_ITEMS (MAX_VARS + MAX_APPS)
 #define OS_TYPE_APP FILES_TYPE_APP
 #define PROGRAM_ASM 0
@@ -198,7 +192,7 @@ enum {
 #define ICON_PALETTE_COUNT \
     (ICON_PALETTE_LEVELS * ICON_PALETTE_LEVELS * ICON_PALETTE_LEVELS)
 #define ICON_DCS_COLOR_COUNT 24
-#define ICON_READ_SIZE 320
+#define ICON_READ_SIZE 280
 #define ICON_CACHE_ENTRIES PER_PAGE
 
 typedef struct {
@@ -216,7 +210,7 @@ static file_var_t vars[MAX_ITEMS];
 static int var_count = 0;
 
 /* visible items: indices into vars[], rebuilt when changing folders */
-static int  view[MAX_ITEMS];
+static uint8_t view[MAX_ITEMS];   /* MAX_ITEMS <= 255 */
 static int  view_count = 0;
 static folder_t cur_folder = F_PROGRAMS;
 
@@ -530,6 +524,7 @@ static bool read_program_icon(uint8_t handle, uint8_t *icon)
 {
     uint8_t data[ICON_READ_SIZE];
     size_t size = ti_GetSize(handle);
+    NOTE_STACK();
     size_t bytes = size < sizeof(data) ? size : sizeof(data);
     size_t count = ti_Read(data, 1, bytes, handle);
     size_t i, quote, icon_start;
@@ -726,7 +721,7 @@ static void scan_flash_apps(void)
         name[8] = 0;
         for (i = 7; i >= 0 && name[i] == ' '; i--)
             name[i] = 0;
-        if (!name[0] || name[0] < 'A' || strcmp(name, "SHELL") == 0)
+        if (!name[0] || name[0] < 'A' || strcmp(name, SHELL_APP_NAME) == 0)
             continue;
 
         header = flash_apps_find_app(name);
@@ -766,7 +761,7 @@ static void rescan(void)
            (name = ti_DetectAny(&vat, NULL, &type)) != NULL) {
         if ((type == OS_TYPE_PRGM || type == OS_TYPE_PROT_PRGM ||
              type == OS_TYPE_APPVAR) && name[0] >= 'A' &&
-            strcmp(name, "SHELL") != 0) {
+            strcmp(name, SHELL_APP_NAME) != 0) {
             add_var(name, type);
         }
     }
@@ -779,7 +774,7 @@ static void rescan(void)
         name[name_length] = 0;
         if ((type == OS_TYPE_PRGM || type == OS_TYPE_PROT_PRGM ||
              type == OS_TYPE_APPVAR) && name[0] >= 'A' &&
-            strcmp(name, "SHELL") != 0) {
+            strcmp(name, SHELL_APP_NAME) != 0) {
             add_var(name, (uint8_t)type);
         }
     }
@@ -874,26 +869,31 @@ static void draw_file_icon(uint8_t type, int x, int y)
 }
 
 #ifndef FILES_NO_ICONS
+/* The icon is drawn at 2x. A full 32x32 sprite would be a 1 KB local on a stack that only has
+ * a few KB in total, so it is built and drawn in four 32x8 bands (258 bytes at a time). */
 static void draw_program_icon(const uint8_t *icon, int x, int y)
 {
-    uint8_t sprite_data[2 + 32 * 32];
-    int i, j;
+    uint8_t band_data[2 + 32 * 8];
+    int dx = x + (TILE_W - 32) / 2, dy = y + 2;
+    int band, i, j;
 
-    sprite_data[0] = 32;
-    sprite_data[1] = 32;
-    for (i = 0; i < 16; i++) {
-        for (j = 0; j < 16; j++) {
-            uint8_t pixel = icon[i * 16 + j];
-            size_t row = (size_t)i * 2 * 32 + (size_t)j * 2;
-            sprite_data[2 + row] = pixel;
-            sprite_data[2 + row + 1] = pixel;
-            sprite_data[2 + row + 32] = pixel;
-            sprite_data[2 + row + 33] = pixel;
+    NOTE_STACK();
+    band_data[0] = 32;
+    band_data[1] = 8;
+    for (band = 0; band < 4; band++) {
+        for (i = 0; i < 4; i++) {
+            const uint8_t *src = icon + (band * 4 + i) * 16;
+            uint8_t *row = band_data + 2 + i * 2 * 32;
+            for (j = 0; j < 16; j++) {
+                uint8_t pixel = src[j];
+                row[j * 2] = pixel;
+                row[j * 2 + 1] = pixel;
+                row[32 + j * 2] = pixel;
+                row[32 + j * 2 + 1] = pixel;
+            }
         }
+        gfx_TransparentSprite((gfx_sprite_t *)band_data, dx, dy + band * 8);
     }
-
-    gfx_TransparentSprite((gfx_sprite_t *)sprite_data,
-                          x + (TILE_W - 32) / 2, y + 2);
 }
 #endif
 

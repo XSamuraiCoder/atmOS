@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Built-in Settings app. Same hook shape as Files / Notes in the app_t table. */
+/* Built-in Settings app (tabs: Look / Taskbar / System, dropdown menus).
+ * Same hook shape as Files / Notes in the app_t table. */
 
 typedef struct { uint8_t r, g, b; } settings_rgb_t;
 
@@ -17,10 +18,16 @@ typedef struct {
 
 /* values used by the shell */
 void settings_init(void);                       /* load saved settings; call once per start */
-const settings_theme_t *settings_theme(void);   /* current colors */
+const settings_theme_t *settings_theme(void);   /* effective colors (preset + taskbar/accent/wallpaper choices) */
 uint8_t settings_pointer_speed(void);           /* 0 = slow, 1 = normal, 2 = fast */
 bool settings_clock_24h(void);                  /* false = 12-hour with AM/PM */
+bool settings_show_battery(void);               /* menu bar battery indicator */
+bool settings_dock_labels(void);                /* tooltip with the app name over the dock */
 bool settings_take_changed(void);               /* true once after a change: re-apply the palette */
+bool settings_take_font_changed(void);          /* true once after the font changed: redraw everything */
+
+/* Applies the chosen font to graphx. Call after gfx_Begin() and after a font change. */
+void settings_apply_font(void);
 
 /* app hooks */
 void settings_open(void);                       /* call when the window opens */
@@ -33,6 +40,7 @@ bool settings_hover(int x, int y);
 int settings_dirty(int x, int y, int r[][4], int max);
 bool settings_keys(void);                       /* always false: arrows move the pointer */
 bool settings_press(void);                      /* always false: Enter clicks */
+bool settings_cancel(void);                     /* Clear: closes an open dropdown; true = handled */
 void settings_flush(void);                      /* archive the AppVar; call before leaving the shell */
 
 #endif

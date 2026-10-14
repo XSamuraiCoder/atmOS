@@ -135,4 +135,4 @@ _flash_apps_launch:
 
 	.section .rodata
 .L_shell_app_name:
-	.db	"SHELL",0,0,0	; FIX: padded to 8 bytes
+	.db	"atmOS",0,0,0	; must match SHELL_APP_NAME / the Makefile NAME; padded to 8 bytes

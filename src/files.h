@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #define FILES_MAX_PINS 6
+#define SHELL_APP_NAME "atmOS"   /* installed Flash App name: must match NAME in the Makefile */
 #define FILES_TYPE_APP 0x14
 
 typedef struct {

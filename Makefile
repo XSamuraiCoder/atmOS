@@ -4,16 +4,21 @@
 
 .DEFAULT_GOAL := all
 
-NAME = SHELL
+NAME = atmOS
 DESCRIPTION = "Calculator shell"
 APPLICATION = YES
-APPLICATION_DESCRIPTION = "Calculator shell"
+APPLICATION_DESCRIPTION = "Calculator 
+shell"
 BINDIR = bin
 
 CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
 CXXFLAGS = -Wall -Wextra -Oz
 
-APPVAR_PREFIX = APP
+# To debug memory issues
+# CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1 -DSHELL_DEBUG_STACK
+# CXXFLAGS = -Wall -Wextra -Oz -DSHELL_DEBUG_STACK
+
+APPVAR_PREFIX = atmOS
 APPVAR_SPLIT_SIZE = 65200
 CLIBS_VERSION = v15.0
 CLIBS_FILE = $(BINDIR)/clibs.8xg
@@ -25,7 +30,7 @@ all: package
 flash-app: target
 
 appvars: flash-app
-	$(Q)$(CONVBIN) -j 8ek -i $(call QUOTE_ARG,$(BINDIR)/$(NAME).8ek) -k 8xv-split -m $(APPVAR_SPLIT_SIZE) -o $(call QUOTE_ARG,$(BINDIR)/SHELL.8xv) -n $(APPVAR_PREFIX)
+	$(Q)$(CONVBIN) -j 8ek -i $(call QUOTE_ARG,$(BINDIR)/$(NAME).8ek) -k 8xv-split -m $(APPVAR_SPLIT_SIZE) -o $(call QUOTE_ARG,$(BINDIR)/atmOS.8xv) -n $(APPVAR_PREFIX)
 
 libraries: $(CLIBS_FILE)
 

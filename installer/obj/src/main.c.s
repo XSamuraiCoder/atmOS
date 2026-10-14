@@ -708,7 +708,7 @@ JTI1_0:
 	.balign	1
 	.local	_.str
 _.str:
-	.asciz	"APP%u"
+	.asciz	"atmOS%u"
 
 	.section	.rodata._.str.1,"a",@progbits
 	.balign	1
