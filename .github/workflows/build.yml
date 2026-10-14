@@ -1,0 +1,87 @@
+name: Build atmOS
+
+# Builds the Flash App, installer and libraries on every push (and pull request) and publishes
+# the result:
+#   - every run: the files in bin/ as a downloadable workflow artifact (Actions tab -> the run)
+#   - pushes to the default branch: also a zip on a rolling "nightly" pre-release
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CE C/C++ Toolchain release to build with (keep in step with the version you use locally)
+  CEDEV_VERSION: v15.0
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # only used to update the rolling release
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache the toolchain
+        id: cedev-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/CEdev
+          key: cedev-${{ env.CEDEV_VERSION }}-linux
+
+      - name: Install the toolchain
+        if: steps.cedev-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/CE-Programming/toolchain/releases/download/${CEDEV_VERSION}/CEdev-Linux.tar.gz" -o cedev.tar.gz
+          tar -xzf cedev.tar.gz -C "$HOME"
+          test -x "$HOME/CEdev/bin/cedev-config"
+
+      - name: Set up the environment
+        run: |
+          echo "CEDEV=$HOME/CEdev" >> "$GITHUB_ENV"
+          echo "$HOME/CEdev/bin" >> "$GITHUB_PATH"
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      # Files edited on Windows can have CRLF line endings. GNU make passes the stray CR to the
+      # shell and GNU as can put it into section names, so normalise them for this Linux build.
+      - name: Normalise line endings
+        run: |
+          find . -type f \( -name 'Makefile' -o -name '*.mk' -o -name '*.s' -o -name '*.S' \
+            -o -name '*.ld' -o -name '*.yaml' \) -not -path './.git/*' -exec sed -i 's/\r$//' {} +
+
+      - name: Build (app, installer, libraries)
+        run: make package
+
+      - name: Zip the outputs
+        run: |
+          test -d bin && ls -la bin
+          (cd bin && zip -r "../atmOS-${SHORT_SHA}.zip" .)
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: atmOS-${{ env.SHORT_SHA }}
+          path: bin/
+          if-no-files-found: error
+
+      - name: Update the rolling release
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly "atmOS-${SHORT_SHA}.zip" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "atmOS (latest build)" \
+            --notes "Automatic build of ${GITHUB_SHA}. Unzip and send the files to the calculator."
