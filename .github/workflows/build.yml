@@ -2,9 +2,9 @@ name: Build atmOS
 
 # Builds the Flash App, installer and libraries on every push (and pull request) and publishes
 # the result:
-#   - every run: atmOS.x.8xv, INSTALL.8xp and clibs.8xg as a downloadable workflow artifact
-#     (Actions tab -> the run)
-#   - pushes to the default branch: also a zip on a rolling "nightly" pre-release
+#   - every run: an artifact named atmOS (downloads as atmOS.zip) holding atmOS.x.8xv,
+#     INSTALL.8xp and clibs.8xg (Actions tab -> the run)
+#   - pushes to the default branch: also atmOS.zip on a rolling "nightly" pre-release
 on:
   push:
   pull_request:
@@ -81,12 +81,14 @@ jobs:
           ls -la dist
 
       - name: Zip the outputs
-        run: (cd dist && zip -r "../atmOS-${SHORT_SHA}.zip" .)
+        run: (cd dist && zip -r ../atmOS.zip .)
 
       - name: Upload the build
         uses: actions/upload-artifact@v4
         with:
-          name: atmOS-${{ env.SHORT_SHA }}
+          # GitHub always downloads an artifact as a zip, so an artifact named "atmOS" is
+          # downloaded as atmOS.zip with the three files directly inside.
+          name: atmOS
           path: dist/
           if-no-files-found: error
 
@@ -96,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete nightly --cleanup-tag --yes || true
-          gh release create nightly "atmOS-${SHORT_SHA}.zip" \
+          gh release create nightly atmOS.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "atmOS (latest build)" \
