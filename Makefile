@@ -7,8 +7,7 @@
 NAME = atmOS
 DESCRIPTION = "Calculator shell"
 APPLICATION = YES
-APPLICATION_DESCRIPTION = "Calculator 
-shell"
+APPLICATION_DESCRIPTION = "Calculator shell"
 BINDIR = bin
 
 CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
