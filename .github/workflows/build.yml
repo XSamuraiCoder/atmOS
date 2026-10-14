@@ -2,7 +2,8 @@ name: Build atmOS
 
 # Builds the Flash App, installer and libraries on every push (and pull request) and publishes
 # the result:
-#   - every run: the files in bin/ as a downloadable workflow artifact (Actions tab -> the run)
+#   - every run: atmOS.x.8xv, INSTALL.8xp and clibs.8xg as a downloadable workflow artifact
+#     (Actions tab -> the run)
 #   - pushes to the default branch: also a zip on a rolling "nightly" pre-release
 on:
   push:
@@ -52,26 +53,41 @@ jobs:
           echo "$HOME/CEdev/bin" >> "$GITHUB_PATH"
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
+      # Build folders that were committed from a Windows machine hold dependency files
+      # (obj/**/*.d) with C:\ paths. GNU make on Linux reads those and stops with
+      # "multiple target patterns", so always build from a clean slate.
+      - name: Remove stale build output
+        run: rm -rf obj bin installer/obj installer/bin
+
       # Files edited on Windows can have CRLF line endings. GNU make passes the stray CR to the
       # shell and GNU as can put it into section names, so normalise them for this Linux build.
+      # The second expression adds the missing final newline that GNU as warns about.
       - name: Normalise line endings
         run: |
           find . -type f \( -name 'Makefile' -o -name '*.mk' -o -name '*.s' -o -name '*.S' \
-            -o -name '*.ld' -o -name '*.yaml' \) -not -path './.git/*' -exec sed -i 's/\r$//' {} +
+            -o -name '*.ld' -o -name '*.yaml' \) -not -path './.git/*' \
+            -exec sed -i -e 's/\r$//' -e '$a\' {} +
 
       - name: Build (app, installer, libraries)
         run: make package
 
-      - name: Zip the outputs
+      # Only the files you send to the calculator: the app as AppVars (atmOS.0.8xv, atmOS.1.8xv, ...
+      # if it ever grows past one variable), the installer and the libraries. cp fails the step
+      # if any of them is missing.
+      - name: Collect the files to publish
         run: |
-          test -d bin && ls -la bin
-          (cd bin && zip -r "../atmOS-${SHORT_SHA}.zip" .)
+          mkdir dist
+          cp bin/atmOS.*.8xv bin/INSTALL.8xp bin/clibs.8xg dist/
+          ls -la dist
+
+      - name: Zip the outputs
+        run: (cd dist && zip -r "../atmOS-${SHORT_SHA}.zip" .)
 
       - name: Upload the build
         uses: actions/upload-artifact@v4
         with:
           name: atmOS-${{ env.SHORT_SHA }}
-          path: bin/
+          path: dist/
           if-no-files-found: error
 
       - name: Update the rolling release
