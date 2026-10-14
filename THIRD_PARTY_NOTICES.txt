@@ -5,6 +5,8 @@ palette used by convimg.
 
 Copyright 2017-2026 Matt "MateoConLechuga" Waltz
 
+Also, Thanks to RoccoLox Programs for making CEashell, which's code is used for running apps.
+
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
 
