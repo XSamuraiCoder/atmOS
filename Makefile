@@ -1,5 +1,5 @@
 # ----------------------------
-# Makefile for the TI-84 CE shell
+# Makefile for the TI-84 CE shell (atmOS)
 # ----------------------------
 
 .DEFAULT_GOAL := all
@@ -11,11 +11,7 @@ APPLICATION_DESCRIPTION = "Calculator shell"
 BINDIR = bin
 
 CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
-CXXFLAGS = -Wall -Wextra -Oz
-
-# To debug memory issues
-# CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1 -DSHELL_DEBUG_STACK
-# CXXFLAGS = -Wall -Wextra -Oz -DSHELL_DEBUG_STACK
+CXXFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
 
 APPVAR_PREFIX = atmOS
 APPVAR_SPLIT_SIZE = 65200
@@ -33,9 +29,10 @@ appvars: flash-app
 
 libraries: $(CLIBS_FILE)
 
+# Tries the pinned release first and falls back to the latest one if that tag does not exist.
 $(CLIBS_FILE):
 	$(Q)$(call MKDIR,$(@D))
-	$(Q)curl.exe -fL "https://github.com/CE-Programming/libraries/releases/download/$(CLIBS_VERSION)/clibs.8xg" -o "$(call NATIVEPATH,$@)"
+	$(Q)curl -fL "https://github.com/CE-Programming/libraries/releases/download/$(CLIBS_VERSION)/clibs.8xg" -o "$(call NATIVEPATH,$@)" || curl -fL "https://github.com/CE-Programming/libraries/releases/latest/download/clibs.8xg" -o "$(call NATIVEPATH,$@)"
 
 installer:
 	$(Q)$(MAKE) -B -C installer APPVAR_PREFIX=$(APPVAR_PREFIX) APPVAR_SPLIT_SIZE=$(APPVAR_SPLIT_SIZE) BINDIR=../$(BINDIR)
