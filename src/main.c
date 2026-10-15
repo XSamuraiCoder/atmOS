@@ -214,7 +214,6 @@ static bool bar_tick(void)           /* true when the bar needs a redraw */
     return false;
 }
 
-#ifdef SHELL_DEBUG_STACK
 static uintptr_t min_sp = (uintptr_t)-1;
 
 void shell_note_stack(void)
@@ -224,6 +223,7 @@ void shell_note_stack(void)
     if (sp < min_sp) min_sp = sp;
 }
 
+#ifdef SHELL_DEBUG_STACK
 static void draw_stack_debug(void)
 {
     static const char hex[] = "0123456789ABCDEF";
