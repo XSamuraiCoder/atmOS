@@ -9,7 +9,8 @@
  * so the shell behind the window is the preview. Settings live in the AppVar SHLSET
  * (RAM on every change, archived when the shell is left).
  */
-#include <graphx.h>
+ #include <graphx.h>
+#include <keypadc.h>
 #include <fileioc.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -82,11 +83,13 @@ static const struct { const char *name; settings_rgb_t c; uint8_t pal; } accents
     { "Gray",   { 142, 142, 147 }, 7 }
 };
 
-#define FONT_COUNT 4
-enum { FONT_DEFAULT, FONT_COMPACT, FONT_ROOMY, FONT_MONO };
-#define FONT_CUSTOM FONT_COUNT          /* prefs.font value: use the custom font in cvar/cidx */
+#define FONT_BUILTIN 1                  /* built-in entries of the Font dropdown: just Default */
+enum { FONT_DEFAULT };
+/* prefs.font value: use the custom font in cvar/cidx. Kept at 4 so saved settings stay valid
+ * (1-3 used to be Compact / Roomy / Mono; they load as Default now). */
+#define FONT_CUSTOM 4
 #define MAX_CUSTOM  8                   /* custom fonts listed in the dropdown */
-static const char *const font_names[FONT_COUNT] = { "Default", "Compact", "Roomy", "Mono" };
+static const char *const font_names[FONT_BUILTIN] = { "Default" };
 
 /* ---------- state ---------- */
 typedef struct {
@@ -152,8 +155,16 @@ static int tab;                         /* current tab */
 static int hover = -1;                  /* widget under the pointer */
 static int open_drop = -1;              /* dropdown whose list is open */
 static int open_hover = -1;             /* list item under the pointer */
+static int drop_scroll = 0;             /* first visible row of a long open list */
 
-#define ITEM_H 13
+/* Dropdown rows grow with the active font so a tall custom font never
+ * overlaps the row above/below (ui_print centers glyphs on an 8px line). */
+#define ITEM_H_MIN 13
+static int item_h(void)
+{
+    int h = (int)ui_text_height() + 5;
+    return h < ITEM_H_MIN ? ITEM_H_MIN : h;
+}
 
 /* ---------- dirty rectangles (content-relative) ---------- */
 #define DQ_MAX 6
@@ -310,7 +321,7 @@ static int find_custom(const char *var, uint8_t index)
 static bool sane(const uint8_t *b)       /* b[1..10] = the ten settings */
 {
     return b[1] < THEME_COUNT && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
-           b[4] <= FONT_COUNT && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
+           b[4] <= FONT_CUSTOM && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
 
@@ -341,7 +352,9 @@ static void load_prefs(void)
         }
         ti_Close(h);
     }
-    if (prefs.font == FONT_CUSTOM && find_custom(prefs.cvar, prefs.cidx) < 0)
+    if (prefs.font != FONT_CUSTOM)
+        prefs.font = FONT_DEFAULT;                  /* also maps the removed Compact/Roomy/Mono */
+    else if (find_custom(prefs.cvar, prefs.cidx) < 0)
         prefs.font = FONT_DEFAULT;                  /* that font pack is no longer installed */
     rebuild_theme();
 }
@@ -375,6 +388,7 @@ void settings_init(void)
     font_changed = false;
     hover = -1;
     open_drop = open_hover = -1;
+    drop_scroll = 0;
     tab = 0;
 }
 
@@ -409,29 +423,14 @@ bool settings_take_font_changed(void)
 }
 
 /* ---------- fonts ----------
- * graphx draws text with one global font. The widths of the built-in font are captured once
- * (right after gfx_Begin), then Compact / Roomy shift them by one pixel and Mono switches to
- * a fixed 8px cell. Layouts are designed for Default; the other fonts trade some fit for looks. */
-static uint8_t font_width[256];
-
+ * Built-in text is graphx's own font with its default spacing. Every other typeface is a custom
+ * fontlibc font pack and is drawn by ui_text.c. Layouts are designed for the 8px built-in font. */
 void settings_apply_font(void)
 {
-    int c;
-
-#ifdef SHELL_NO_FONTS
-    return;
-#endif
+#ifndef SHELL_NO_FONTS
     gfx_SetMonospaceFont(0);
-    gfx_SetFontSpacing(NULL);                       /* graphx default spacing */
-    if (prefs.font == FONT_DEFAULT || prefs.font == FONT_CUSTOM) return;   /* custom: see ui_text.c */
-    for (c = 0; c < 256; c++) {                     /* default widths, shifted by one pixel */
-        int w = (int)gfx_GetCharWidth((char)c);
-        if (prefs.font == FONT_COMPACT && w > 5) w--;
-        else if (prefs.font == FONT_ROOMY && w > 0) w++;
-        font_width[c] = (uint8_t)w;
-    }
-    gfx_SetFontSpacing(font_width);
-    if (prefs.font == FONT_MONO) gfx_SetMonospaceFont(8);
+    gfx_SetFontSpacing(NULL);                       /* graphx default font and spacing */
+#endif
 }
 
 bool settings_custom_font(char var_name[9], uint8_t *font_index)
@@ -450,7 +449,7 @@ static int drop_count(int id)
     case W_THEME:  return THEME_COUNT;
     case W_WALL:   return WALL_COUNT;
     case W_ACCENT: return ACCENT_COUNT + 1;
-    case W_FONT:   return FONT_COUNT + custom_count;
+    case W_FONT:   return FONT_BUILTIN + custom_count;
     default:       return TINT_COUNT + 1;           /* W_BAR, W_DOCK */
     }
 }
@@ -460,7 +459,7 @@ static const char *drop_item(int id, int i)
     switch (id) {
     case W_THEME:  return theme_names[i];
     case W_WALL:   return wall_names[i];
-    case W_FONT:   return i < FONT_COUNT ? font_names[i] : custom[i - FONT_COUNT].label;
+    case W_FONT:   return i < FONT_BUILTIN ? font_names[i] : custom[i - FONT_BUILTIN].label;
     case W_ACCENT: return i == 0 ? "Theme" : accents[i - 1].name;
     default:       return i == 0 ? "Theme" : tints[i - 1].name;
     }
@@ -474,7 +473,7 @@ static int drop_value(const prefs_t *p, int id)
     case W_ACCENT: return p->accent;
     case W_FONT: {
         int k = p->font == FONT_CUSTOM ? find_custom(p->cvar, p->cidx) : -1;
-        return k >= 0 ? FONT_COUNT + k : (p->font < FONT_COUNT ? p->font : FONT_DEFAULT);
+        return k >= 0 ? FONT_BUILTIN + k : FONT_DEFAULT;
     }
     case W_BAR:    return p->bar;
     default:       return p->dock;
@@ -488,12 +487,12 @@ static void drop_set(prefs_t *p, int id, int v)
     case W_WALL:   p->wall = (uint8_t)v;   break;
     case W_ACCENT: p->accent = (uint8_t)v; break;
     case W_FONT:
-        if (v < FONT_COUNT) {
-            p->font = (uint8_t)v;
+        if (v < FONT_BUILTIN) {
+            p->font = FONT_DEFAULT;
         } else {
             p->font = FONT_CUSTOM;
-            strcpy(p->cvar, custom[v - FONT_COUNT].var);
-            p->cidx = custom[v - FONT_COUNT].index;
+            strcpy(p->cvar, custom[v - FONT_BUILTIN].var);
+            p->cidx = custom[v - FONT_BUILTIN].index;
         }
         break;
     case W_BAR:    p->bar = (uint8_t)v;    break;
@@ -553,11 +552,37 @@ static int widget_at(int x, int y)
 
 typedef struct { int x, y, w, h, n; } dd_list_t;
 
+/* A long list (the Font dropdown with several packs installed) can be taller than the
+ * window once custom fonts raise item_h(); only the rows in [drop_scroll, drop_scroll +
+ * visible) are drawn and hit-tested, and the scroll keeps open_hover on screen. */
+
+static int list_visible(void)
+{
+    int vis = (CONTENT_H - 12) / item_h();
+    return vis < 1 ? 1 : vis;
+}
+
+static void drop_clamp_scroll(void)
+{
+    int vis;
+
+    if (open_drop < 0) return;
+    vis = list_visible();
+    if (drop_scroll > drop_count(open_drop) - vis)
+        drop_scroll = drop_count(open_drop) - vis;
+    if (drop_scroll < 0) drop_scroll = 0;
+    if (open_hover >= 0) {                       /* keep the hovered item visible */
+        if (open_hover < drop_scroll) drop_scroll = open_hover;
+        if (open_hover >= drop_scroll + vis) drop_scroll = open_hover - vis + 1;
+    }
+}
+
 static dd_list_t list_geom(int id)
 {
     dd_list_t l;
     l.n = drop_count(id);
-    l.h = l.n * ITEM_H + 6;
+    if (l.n > list_visible()) l.n = list_visible();
+    l.h = l.n * item_h() + 6;
     l.x = wd[id].x;
     l.w = wd[id].w;
     l.y = wd[id].y;                         /* pops up over its button, like a menu */
@@ -579,18 +604,18 @@ static int list_item_at(int x, int y)
     dd_list_t l;
     if (open_drop < 0) return -1;
     l = list_geom(open_drop);
-    if (x < l.x || x >= l.x + l.w || y < l.y + 3 || y >= l.y + 3 + l.n * ITEM_H) return -1;
-    return (y - l.y - 3) / ITEM_H;
+    if (x < l.x || x >= l.x + l.w || y < l.y + 3 || y >= l.y + 3 + l.n * item_h()) return -1;
+    return drop_scroll + (y - l.y - 3) / item_h();
 }
 
 static void mark_item(int i)
 {
     dd_list_t l;
     if (open_drop < 0 || i < 0) return;
+    if (i < drop_scroll || i >= drop_scroll + list_visible()) return;
     l = list_geom(open_drop);
-    mark(l.x, l.y + 3 + i * ITEM_H, l.w, ITEM_H);
+    mark(l.x, l.y + 3 + (i - drop_scroll) * item_h(), l.w, item_h());
 }
-
 /* ---------- drawing ---------- */
 static void text_color(uint8_t fg)
 {
@@ -674,6 +699,7 @@ static void draw_list(int x, int y)
 {
     dd_list_t l = list_geom(open_drop);
     int cur = drop_value(&prefs, open_drop);
+    int total = drop_count(open_drop);
     int i;
 
     gfx_SetColor(PAL_TEXT);                         /* outline */
@@ -681,19 +707,19 @@ static void draw_list(int x, int y)
     gfx_SetColor(PAL_LABEL);
     fill_rr(x + l.x, y + l.y, l.w, l.h, 5);
 
-    for (i = 0; i < l.n; i++) {
-        int iy = y + l.y + 3 + i * ITEM_H;
+    for (i = drop_scroll; i < drop_scroll + l.n; i++) {
+        int iy = y + l.y + 3 + (i - drop_scroll) * item_h();
         int sw = drop_swatch(open_drop, i);
         int tx = x + l.x + 16;
         bool hot = i == open_hover;
 
         if (hot) {
             gfx_SetColor(PAL_ACCENT);
-            gfx_FillRectangle(x + l.x + 3, iy, l.w - 6, ITEM_H);
+            gfx_FillRectangle(x + l.x + 3, iy, l.w - 6, item_h());
         }
         if (i == cur) {                             /* current value */
             gfx_SetColor(hot ? PAL_LABEL : PAL_ACCENT);
-            gfx_FillCircle(x + l.x + 9, iy + ITEM_H / 2, 2);
+            gfx_FillCircle(x + l.x + 9, iy + item_h() / 2, 2);
         }
         if (sw >= 0) {
             gfx_SetColor((uint8_t)sw);
@@ -701,7 +727,15 @@ static void draw_list(int x, int y)
             tx += 12;
         }
         text_color(hot ? PAL_LABEL : PAL_TEXT);
-        ui_print(drop_item(open_drop, i), tx, iy + (ITEM_H - 8) / 2);
+        ui_print(drop_item(open_drop, i), tx, iy + (item_h() - 8) / 2);
+    }
+
+    if (total > l.n) {                              /* scrolled: position bar */
+        int bar_h = l.h * l.n / total;
+        int bar_y = y + l.y + (l.h - bar_h) * drop_scroll / (total - l.n);
+        if (bar_h < 8) bar_h = 8;
+        gfx_SetColor(PAL_BAR_LINE);
+        gfx_FillRectangle(x + l.x + l.w - 3, bar_y, 2, bar_h);
     }
 }
 
@@ -750,6 +784,7 @@ void settings_draw_region(int x, int y, int x0, int y0, int x1, int y1)
     size_t i;
 
     gfx_SetTextScale(1, 1);
+    ui_spill_reset();
 
     for (id = 0; id < W_COUNT; id++) {
         if (!visible(id)) continue;
@@ -787,9 +822,18 @@ void settings_draw_region(int x, int y, int x0, int y0, int x1, int y1)
 
     if (open_drop >= 0) {
         dd_list_t l = list_geom(open_drop);
-        if (touches(x0, y0, x1, y1, x + l.x - 1, y + l.y - 1,
-                    x + l.x + l.w + 1, y + l.y + l.h + 1))
+        int lx0 = x + l.x - 1, ly0 = y + l.y - 1;
+        int lx1 = x + l.x + l.w + 1, ly1 = y + l.y + l.h + 1;
+        bool in_region = touches(x0, y0, x1, y1, lx0, ly0, lx1, ly1);
+        /* text under the list is drawn whole and can land on the list outside the repaint
+         * rectangle: then the list is repainted completely (clip widened to the list) */
+        bool spilled = ui_spill_hits(lx0, ly0, lx1, ly1);
+
+        if (in_region || spilled) {
+            if (spilled) ui_overlay_clip(lx0, ly0, lx1, ly1);
             draw_list(x, y);
+            ui_overlay_clip_end();
+        }
     }
 }
 
@@ -803,6 +847,7 @@ void settings_open(void)
 {
     hover = -1;
     open_drop = open_hover = -1;
+    drop_scroll = 0;
     dq_n = 0;
     dq_full = false;
 }
@@ -815,6 +860,8 @@ bool settings_hover(int x, int y)
         mark_item(open_hover);
         mark_item(it);
         open_hover = it;
+        drop_clamp_scroll();
+
         return true;
     }
     {
@@ -877,6 +924,7 @@ bool settings_cancel(void)
 {
     if (open_drop < 0) return false;
     open_drop = open_hover = -1;
+    drop_scroll = 0;
     mark_all();
     return true;
 }
@@ -891,6 +939,7 @@ void settings_click(int x, int y)
         int w = open_drop;
         if (it < 0 && in_list(x, y)) return;        /* padding inside the list: ignore */
         open_drop = open_hover = -1;
+    drop_scroll = 0;
         mark_all();
         if (it >= 0) {
             drop_set(&next, w, it);
@@ -913,6 +962,9 @@ void settings_click(int x, int y)
     if (IS_DROP(id)) {
         open_drop = id;
         open_hover = drop_value(&prefs, id);
+        drop_scroll = 0;
+        drop_clamp_scroll();
+
         mark_all();
         return;
     }
@@ -935,7 +987,9 @@ void settings_click(int x, int y)
 
 bool settings_keys(void)
 {
-    return false;                       /* pointer-first: arrows move the pointer */
+    /* Keep arrow keys moving the shell cursor. The open list tracks the cursor
+     * through settings_hover(), so it remains navigable without capturing input. */
+    return false;
 }
 
 bool settings_press(void)

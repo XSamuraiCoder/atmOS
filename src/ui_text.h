@@ -27,4 +27,23 @@ void ui_print(const char *s, int x, int y);
 int  ui_text_width(const char *s);
 bool ui_text_custom(void);              /* a custom font is active */
 
+/* Overlays (dropdown list, context menu) are drawn on top of other content. A custom font is
+ * drawn whole, so text under an overlay can spill past the partial-repaint rectangle onto the
+ * overlay's pixels. The fix: note where such text went, and if it reached the overlay, repaint
+ * the overlay completely with the graphx clip widened to its rectangle.
+ *
+ *   ui_spill_reset();                      start of the app's draw_region
+ *   ...draw the content under the overlay...
+ *   if (in_region || ui_spill_hits(rect)) {
+ *       if (ui_spill_hits(rect)) ui_overlay_clip(rect);
+ *       draw_overlay();
+ *       ui_overlay_clip_end();             (no-op when ui_overlay_clip was not called)
+ *   }
+ * Rectangles are x0, y0, x1, y1 with x1/y1 exclusive. */
+void ui_spill_reset(void);
+bool ui_spill_hits(int x0, int y0, int x1, int y1);
+void ui_overlay_clip(int x0, int y0, int x1, int y1);
+void ui_overlay_clip_end(void);
+uint8_t ui_text_height(void);            /* pixel height of the active font (8 = built-in) */
+
 #endif

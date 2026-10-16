@@ -31,8 +31,19 @@ enum {
 #define STORE_NAME  "SHNOTES"
 
 /* list layout */
-#define ROW_H       20
-#define ROW_STEP    22
+#define ROW_H_MIN   20
+
+/* rows grow with the active font so a tall custom font never overlaps */
+static int row_h(void)
+{
+    int h = (int)ui_text_height() + 10;
+    return h < ROW_H_MIN ? ROW_H_MIN : h;
+}
+static int row_step(void)
+{
+    return row_h() + 2;
+}
+
 #define ROW_Y0      4
 #define ROW_X       6
 #define ROW_W       (WIN_W - 12)
@@ -275,27 +286,27 @@ static void print_clipped(const char *s, int len, int x, int y, int max_w)
 
 static void draw_row(int x, int y, int r, bool hot)
 {
-    int ry = y + ROW_Y0 + r * ROW_STEP;
+    int ry = y + ROW_Y0 + r * row_step();
     int rx = x + ROW_X;
     bool warn = (r > 0 && r == del_row);
 
     if (r == 0) {
         bool full = note_count >= NOTES_MAX;
         gfx_SetColor(full ? PAL_BAR_LINE : PAL_ACCENT);
-        gfx_FillRectangle(rx, ry, ROW_W, ROW_H);
+        gfx_FillRectangle(rx, ry, ROW_W, row_h());
         text_color(PAL_LABEL);
-        ui_print(full ? "Notes full - delete one" : "+  New note", rx + 8, ry + 6);
+        ui_print(full ? "Notes full - delete one" : "+  New note", rx + 8, ry + (row_h() - 8) / 2);
         if (hot && !full) {
             gfx_SetColor(PAL_LABEL);
-            gfx_Rectangle(rx, ry, ROW_W, ROW_H);
+            gfx_Rectangle(rx, ry, ROW_W, row_h());
         }
         return;
     }
 
     gfx_SetColor(warn ? PAL_ICON0 : (hot ? PAL_DOCK : PAL_LABEL));
-    gfx_FillRectangle(rx, ry, ROW_W, ROW_H);
+    gfx_FillRectangle(rx, ry, ROW_W, row_h());
     gfx_SetColor(PAL_BAR_LINE);
-    gfx_Rectangle(rx, ry, ROW_W, ROW_H);
+    gfx_Rectangle(rx, ry, ROW_W, row_h());
 
     {
         const note_t *n = &notes[r - 1];
@@ -305,13 +316,13 @@ static void draw_row(int x, int y, int r, bool hot)
 
         if (warn) {
             text_color(PAL_LABEL);
-            ui_print("Press del again to delete", rx + 8, ry + 6);
+            ui_print("Press del again to delete", rx + 8, ry + (row_h() - 8) / 2);
             return;
         }
         while (tl < n->len && n->text[tl] != '\n') tl++;
         text_color(PAL_TEXT);
-        if (tl == 0) ui_print("(empty)", rx + 8, ry + 6);
-        else print_clipped(n->text, tl, rx + 8, ry + 6, ROW_W - 70);
+        if (tl == 0) ui_print("(empty)", rx + 8, ry + (row_h() - 8) / 2);
+        else print_clipped(n->text, tl, rx + 8, ry + (row_h() - 8) / 2, ROW_W - 70);
 
         /* "<len>c" right-aligned, gray */
         {
@@ -324,7 +335,7 @@ static void draw_row(int x, int y, int r, bool hot)
         }
         w = ui_text_width(cnt);
         text_color(PAL_ICON0 + 7);
-        ui_print(cnt, rx + ROW_W - 8 - w, ry + 6);
+        ui_print(cnt, rx + ROW_W - 8 - w, ry + (row_h() - 8) / 2);
     }
 }
 
@@ -405,8 +416,8 @@ static int row_at(int x, int y)
 {
     int r;
     if (x < ROW_X || x >= ROW_X + ROW_W || y < ROW_Y0) return -1;
-    r = (y - ROW_Y0) / ROW_STEP;
-    if ((y - ROW_Y0) % ROW_STEP >= ROW_H) return -1;
+    r = (y - ROW_Y0) / row_step();
+    if ((y - ROW_Y0) % row_step() >= row_h()) return -1;
     return r <= note_count ? r : -1;
 }
 

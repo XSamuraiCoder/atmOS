@@ -1230,7 +1230,7 @@ static void draw_tile(const file_var_t *v, const uint8_t *icon,
     ui_text_color(PAL_TEXT);
     ui_print(v->name,
         x + (TILE_W - ui_text_width(v->name)) / 2,
-        y + 39);
+        y + 36);
 
     if (v->type == OS_TYPE_APP)
         strcpy(size_s, "APP");
@@ -1240,7 +1240,7 @@ static void draw_tile(const file_var_t *v, const uint8_t *icon,
         strcpy(size_s, "?");
     ui_print(size_s,
         x + (TILE_W - ui_text_width(size_s)) / 2,
-        y + 50);
+        y + 36 + (int)ui_text_height() + 3);
 }
 
 static void draw_grid_region(int x, int y,
@@ -1365,6 +1365,7 @@ void files_draw_region(int x, int y, int x0, int y0, int x1, int y1)
 
     gfx_SetTextScale(1, 1);
     gfx_SetTextConfig(gfx_text_clip);
+    ui_spill_reset();
 
     if (overlaps(x0, y0, x1, y1,
                  x, y, x + WIN_W, y + TOOL_H))
@@ -1391,12 +1392,20 @@ void files_draw_region(int x, int y, int x0, int y0, int x1, int y1)
         }
     }
 
-    if (pin_menu_open &&
-        overlaps(x0, y0, x1, y1,
-                 x + PIN_MENU_X, y + PIN_MENU_Y,
-                 x + PIN_MENU_X + PIN_MENU_W,
-                 y + PIN_MENU_Y + PIN_MENU_H))
-        draw_pin_menu(x, y);
+    if (pin_menu_open) {
+        int mx0 = x + PIN_MENU_X, my0 = y + PIN_MENU_Y;
+        int mx1 = mx0 + PIN_MENU_W, my1 = my0 + PIN_MENU_H;
+        bool in_region = overlaps(x0, y0, x1, y1, mx0, my0, mx1, my1);
+        /* file names under the menu are drawn whole and can land on it outside the repaint
+         * rectangle: then the menu is repainted completely (clip widened to the menu) */
+        bool spilled = ui_spill_hits(mx0, my0, mx1, my1);
+
+        if (in_region || spilled) {
+            if (spilled) ui_overlay_clip(mx0, my0, mx1, my1);
+            draw_pin_menu(x, y);
+            ui_overlay_clip_end();
+        }
+    }
 }
 
 void files_draw(int x, int y)

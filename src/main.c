@@ -572,7 +572,7 @@ static void draw_dock(int hover)
 
 static void draw_tooltip(int hover)
 {
-    int x, y, w, tx;
+    int x, y, w, tx, bh, by;
 
     if (hover < 0) return;
     dock_item_pos(hover, &x, &y);
@@ -581,10 +581,16 @@ static void draw_tooltip(int hover)
     if (tx < 2) tx = 2;
     if (tx > GFX_LCD_WIDTH - w - 2) tx = GFX_LCD_WIDTH - w - 2;
 
+    /* the box grows with the active font so a tall custom font fits inside */
+    bh = (int)ui_text_height() + 6;
+    if (bh < 14) bh = 14;
+    by = DOCK_Y - bh - 4;
+
+
     gfx_SetColor(PAL_TEXT);
-    fill_round_rect(tx, DOCK_Y - 18, w, 14, 5);
+    fill_round_rect(tx, by, w, bh, 5);
     text_color(PAL_LABEL);
-    ui_print(entries[hover].name, tx + 5, DOCK_Y - 15);
+    ui_print(entries[hover].name, tx + 5, by + (bh - 8) / 2);
 }
 
 static void draw_window(int x0, int y0, int x1, int y1)
