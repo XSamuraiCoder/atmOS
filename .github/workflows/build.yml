@@ -77,7 +77,7 @@ jobs:
       - name: Collect the files to publish
         run: |
           mkdir dist
-          cp bin/atmOS.*.8xv bin/INSTALL.8xp bin/clibs.8xg dist/
+          cp bin/atmOS.*.8xv bin/INSTALL.8xp bin/clibs.8xg readme.txt dist/
           ls -la dist
 
       - name: Zip the outputs
