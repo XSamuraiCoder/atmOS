@@ -46,10 +46,10 @@ void files_draw(int x, int y)
     const char *message = "FILES DISABLED";
 
     gfx_SetTextScale(1, 1);
-    gfx_SetTextFGColor(19);
+    ui_text_color(19);
     gfx_SetTextBGColor(255);
     gfx_SetTextTransparentColor(255);
-    gfx_PrintStringXY(message, x + (304 - gfx_GetStringWidth(message)) / 2, y + 80);
+    ui_print(message, x + (304 - ui_text_width(message)) / 2, y + 80);
 }
 
 void files_draw_region(int x, int y, int x0, int y0, int x1, int y1)
@@ -143,6 +143,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include <string.h>
 #include "files.h"
 #include "debug_stack.h"
+#include "ui_text.h"
 
 /* palette indices - must match the enum in main.c */
 enum {
@@ -1195,8 +1196,8 @@ static void draw_toolbar(int x, int y)
         gfx_FillRectangle(nx + 7, y + 7, 12, 3);
         fill_round(nx + 5, y + 9, 16, 7, 2);
 
-        gfx_SetTextFGColor((int)cur_folder == i ? PAL_LABEL : PAL_TEXT);
-        gfx_PrintStringXY(labels[i], nx + 26, y + 7);
+        ui_text_color((int)cur_folder == i ? PAL_LABEL : PAL_TEXT);
+        ui_print(labels[i], nx + 26, y + 7);
     }
 }
 
@@ -1226,9 +1227,9 @@ static void draw_tile(const file_var_t *v, const uint8_t *icon,
     gfx_SetTextScale(1, 1);
     gfx_SetTextBGColor(PAL_BAR);
     gfx_SetTextTransparentColor(PAL_BAR);
-    gfx_SetTextFGColor(PAL_TEXT);
-    gfx_PrintStringXY(v->name,
-        x + (TILE_W - gfx_GetStringWidth(v->name)) / 2,
+    ui_text_color(PAL_TEXT);
+    ui_print(v->name,
+        x + (TILE_W - ui_text_width(v->name)) / 2,
         y + 39);
 
     if (v->type == OS_TYPE_APP)
@@ -1237,8 +1238,8 @@ static void draw_tile(const file_var_t *v, const uint8_t *icon,
         num_str(v->size, size_s);
     else
         strcpy(size_s, "?");
-    gfx_PrintStringXY(size_s,
-        x + (TILE_W - gfx_GetStringWidth(size_s)) / 2,
+    ui_print(size_s,
+        x + (TILE_W - ui_text_width(size_s)) / 2,
         y + 50);
 }
 
@@ -1275,18 +1276,18 @@ static void draw_grid_region(int x, int y,
             ? "No Flash Apps found"
             : "No files found";
         const char *line2 = "";
-        int w1 = gfx_GetStringWidth(line1);
-        int w2 = gfx_GetStringWidth(line2);
+        int w1 = ui_text_width(line1);
+        int w2 = ui_text_width(line2);
         int tx = x + (WIN_W - w1) / 2;
         int ty = y + CONTENT_H / 2 - (line2[0] ? 8 : 4);
         if (!overlaps(x0, y0, x1, y1, x, ty, x + WIN_W, ty + 18))
             return;
         gfx_SetTextBGColor(PAL_BAR);
         gfx_SetTextTransparentColor(PAL_BAR);
-        gfx_SetTextFGColor(PAL_TEXT);
-        gfx_PrintStringXY(line1, tx, ty);
+        ui_text_color(PAL_TEXT);
+        ui_print(line1, tx, ty);
         if (line2[0])
-            gfx_PrintStringXY(line2, x + (WIN_W - w2) / 2, ty + 10);
+            ui_print(line2, x + (WIN_W - w2) / 2, ty + 10);
     }
 }
 
@@ -1341,18 +1342,18 @@ static void draw_pin_menu(int x, int y)
 
     gfx_SetColor(pin_menu_choice == 0 ? PAL_ACCENT : PAL_BAR);
     gfx_FillRectangle(menu_x + 4, menu_y + 5, PIN_MENU_W - 8, 18);
-    gfx_SetTextFGColor(pin_menu_choice == 0 ? PAL_LABEL : PAL_TEXT);
-    gfx_PrintStringXY(action, menu_x + 10, menu_y + 10);
+    ui_text_color(pin_menu_choice == 0 ? PAL_LABEL : PAL_TEXT);
+    ui_print(action, menu_x + 10, menu_y + 10);
 
     gfx_SetColor(pin_menu_choice == 1 ? PAL_ACCENT : PAL_BAR);
     gfx_FillRectangle(menu_x + 4, menu_y + 25, PIN_MENU_W - 8, 18);
-    gfx_SetTextFGColor(pin_menu_choice == 1 ? PAL_LABEL : PAL_TEXT);
-    gfx_PrintStringXY("Cancel", menu_x + 10, menu_y + 30);
+    ui_text_color(pin_menu_choice == 1 ? PAL_LABEL : PAL_TEXT);
+    ui_print("Cancel", menu_x + 10, menu_y + 30);
 
     if (notice) {
-        gfx_SetTextFGColor(PAL_ICON0);
-        gfx_PrintStringXY(notice,
-            menu_x + (PIN_MENU_W - gfx_GetStringWidth(notice)) / 2,
+        ui_text_color(PAL_ICON0);
+        ui_print(notice,
+            menu_x + (PIN_MENU_W - ui_text_width(notice)) / 2,
             menu_y + 46);
     }
 }

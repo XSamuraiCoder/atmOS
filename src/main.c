@@ -23,6 +23,7 @@
 #include "notes.h"
 #include "settings.h"
 #include "debug_stack.h"
+#include "ui_text.h"
 #ifndef SHELL_FLASH_APP
 #include <fileioc.h>      /* os_RunPrgm */
 #else
@@ -152,7 +153,7 @@ static void begin_graphics(void)
     gfx_FillScreen(PAL_GRAD0);
     gfx_SetDrawBuffer();
     gfx_SetTextConfig(gfx_text_clip);
-    settings_apply_font();           /* font chosen in Settings (gfx_Begin resets it) */
+    ui_text_apply();                 /* font chosen in Settings (gfx_Begin resets it) */
 }
 
 /* gfx_End switches the LCD to 16bpp while VRAM still holds 8bpp indices,
@@ -232,7 +233,7 @@ static void draw_stack_debug(void)
     for (i = 0; i < 6; i++)
         s[3 + i] = hex[(min_sp >> (20 - 4 * i)) & 15];
     s[9] = 0;
-    gfx_PrintStringXY(s, 118, 3);
+    ui_print(s, 118, 3);
 }
 #endif
 
@@ -264,16 +265,16 @@ static void draw_menu_bar(void)
     gfx_SetColor(PAL_BAR_LINE);
     gfx_HorizLine(0, MENU_H, GFX_LCD_WIDTH);
 
-    gfx_SetTextFGColor(PAL_TEXT);
+    ui_text_color(PAL_TEXT);
     gfx_SetTextBGColor(PAL_BAR);
     gfx_SetTextTransparentColor(PAL_BAR);
-    gfx_PrintStringXY(status, 6, 3);
+    ui_print(status, 6, 3);
 #ifdef SHELL_DEBUG_STACK
     draw_stack_debug();
 #endif
 
-    tw = gfx_GetStringWidth(t);
-    gfx_PrintStringXY(t, GFX_LCD_WIDTH - 6 - tw, 3);
+    tw = ui_text_width(t);
+    ui_print(t, GFX_LCD_WIDTH - 6 - tw, 3);
 
     if (!settings_show_battery()) return;     /* Settings > Taskbar */
 
@@ -316,7 +317,7 @@ static int open_entry = -1;        /* dock entry that opened it */
 
 static void text_color(uint8_t fg)
 {
-    gfx_SetTextFGColor(fg);
+    ui_text_color(fg);
     gfx_SetTextBGColor(255);
     gfx_SetTextTransparentColor(255);
 }
@@ -327,7 +328,7 @@ static void placeholder_draw(int x, int y)
     const char *msg = "Coming soon";
     gfx_SetTextScale(1, 1);
     text_color(PAL_TEXT);
-    gfx_PrintStringXY(msg, x + (WIN_W - gfx_GetStringWidth(msg)) / 2, y + 66);
+    ui_print(msg, x + (WIN_W - ui_text_width(msg)) / 2, y + 66);
 }
 
 /* ---------- files app (files.c) ---------- */
@@ -559,7 +560,7 @@ static void draw_dock(int hover)
             gfx_SetColor(PAL_ICON0 + entries[i].color);
             fill_round_rect(x, y, DOCK_ITEM, DOCK_ITEM, 7);
             text_color(PAL_LABEL);
-            gfx_PrintStringXY(letter, x + (DOCK_ITEM - 8) / 2, y + (DOCK_ITEM - 8) / 2);
+            ui_print(letter, x + (DOCK_ITEM - 8) / 2, y + (DOCK_ITEM - 8) / 2);
         }
 
         if (i == open_entry) {   /* "running" dot */
@@ -575,7 +576,7 @@ static void draw_tooltip(int hover)
 
     if (hover < 0) return;
     dock_item_pos(hover, &x, &y);
-    w = gfx_GetStringWidth(entries[hover].name) + 10;
+    w = ui_text_width(entries[hover].name) + 10;
     tx = x + DOCK_ITEM / 2 - w / 2;
     if (tx < 2) tx = 2;
     if (tx > GFX_LCD_WIDTH - w - 2) tx = GFX_LCD_WIDTH - w - 2;
@@ -583,7 +584,7 @@ static void draw_tooltip(int hover)
     gfx_SetColor(PAL_TEXT);
     fill_round_rect(tx, DOCK_Y - 18, w, 14, 5);
     text_color(PAL_LABEL);
-    gfx_PrintStringXY(entries[hover].name, tx + 5, DOCK_Y - 15);
+    ui_print(entries[hover].name, tx + 5, DOCK_Y - 15);
 }
 
 static void draw_window(int x0, int y0, int x1, int y1)
@@ -603,15 +604,18 @@ static void draw_window(int x0, int y0, int x1, int y1)
     gfx_FillCircle(WIN_X + 10, WIN_Y + 8, 4);
 
     t = apps[open_app].title ? apps[open_app].title : entries[open_entry].name;
-    tw = gfx_GetStringWidth(t);
+    tw = ui_text_width(t);
     text_color(PAL_TEXT);
-    gfx_PrintStringXY(t, WIN_X + (WIN_W - tw) / 2, WIN_Y + 4);
+    ui_print(t, WIN_X + (WIN_W - tw) / 2, WIN_Y + 4);
 
+    /* custom-font text of the app may not spill out of the window */
+    ui_text_bounds(WIN_X, WIN_Y + TITLE_H, WIN_X + WIN_W, WIN_Y + WIN_H);
     if (apps[open_app].draw_region)
         apps[open_app].draw_region(WIN_X, WIN_Y + TITLE_H,
                                    x0, y0, x1, y1);
     else
         apps[open_app].draw(WIN_X, WIN_Y + TITLE_H);
+    ui_text_bounds(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
 }
 
 static void draw_cursor(void)
@@ -687,6 +691,7 @@ static void draw_scene_region(int x0, int y0, int x1, int y1, int hover)
     if (x1 <= x0 || y1 <= y0) return;
 
     gfx_SetClipRegion(x0, y0, x1, y1);
+    ui_text_bounds(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
     draw_wallpaper();
     if (overlap(x0, y0, x1, y1, 0, DOCK_Y, GFX_LCD_WIDTH, GFX_LCD_HEIGHT))
         draw_dock(hover);
@@ -784,6 +789,10 @@ static bool flash_app_libraries_ready(void)
 {
 #ifndef SHELL_NO_FILEIOC
     if (!require_flash_app_library("FILEIOC", libload_IsLibLoaded(FILEIOC)))
+        return false;
+#endif
+#ifndef SHELL_NO_FONTLIBC
+    if (!require_flash_app_library("FONTLIBC", libload_IsLibLoaded(FONTLIBC)))
         return false;
 #endif
     return require_flash_app_library("GRAPHX", libload_IsLibLoaded(GRAPHX)) &&
@@ -1000,7 +1009,7 @@ int main(void)
                 setup_palette();                    /* new colors show instantly (8bpp palette) */
                 mark_rect(0, 0, GFX_LCD_WIDTH, MENU_H + 1);   /* clock / battery may have changed */
                 if (settings_take_font_changed()) {
-                    settings_apply_font();          /* text widths changed: repaint everything */
+                    ui_text_apply();                /* text widths changed: repaint everything */
                     dirty = true;
                 }
             }

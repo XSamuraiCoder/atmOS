@@ -15,6 +15,10 @@
 #include <stdint.h>
 #include <string.h>
 #include "settings.h"
+#include "ui_text.h"
+#ifndef SHELL_NO_FONTLIBC
+#include <fontlibc.h>
+#endif
 #include "debug_stack.h"
 
 /* palette indices (same as main.c / files.c / notes.c) */
@@ -29,8 +33,10 @@ enum {
 #define CONTENT_H   180
 
 #define STORE_NAME     "SHLSET"
-#define STORE_VERSION  2
-#define STORE_SIZE     11   /* version, theme, wall, accent, font, bar, dock, speed, clock24, battery, tips */
+#define STORE_VERSION  3
+#define STORE_SIZE     21   /* version, theme, wall, accent, font, bar, dock, speed, clock24, battery, tips,
+                         * custom font AppVar name (9), custom font index */
+#define STORE_SIZE_V2  11
 
 /* ---------- choices ---------- */
 #define THEME_COUNT 6
@@ -78,6 +84,8 @@ static const struct { const char *name; settings_rgb_t c; uint8_t pal; } accents
 
 #define FONT_COUNT 4
 enum { FONT_DEFAULT, FONT_COMPACT, FONT_ROOMY, FONT_MONO };
+#define FONT_CUSTOM FONT_COUNT          /* prefs.font value: use the custom font in cvar/cidx */
+#define MAX_CUSTOM  8                   /* custom fonts listed in the dropdown */
 static const char *const font_names[FONT_COUNT] = { "Default", "Compact", "Roomy", "Mono" };
 
 /* ---------- state ---------- */
@@ -85,18 +93,20 @@ typedef struct {
     uint8_t theme;      /* index into themes[] */
     uint8_t wall;       /* 0 gradient, 1 flat, 2 reverse */
     uint8_t accent;     /* 0 = theme, else accents[accent - 1] */
-    uint8_t font;       /* FONT_* */
+    uint8_t font;       /* FONT_*, or FONT_CUSTOM */
     uint8_t bar;        /* 0 = theme, else tints[bar - 1] */
     uint8_t dock;       /* 0 = theme, else tints[dock - 1] */
     uint8_t speed;      /* 0 slow, 1 normal, 2 fast */
     uint8_t clock24;    /* 1 = 24-hour, 0 = 12-hour */
     uint8_t battery;    /* 1 = show */
     uint8_t tips;       /* 1 = dock labels */
+    char    cvar[9];    /* custom font: font pack AppVar name */
+    uint8_t cidx;       /* custom font: index inside the pack */
 } prefs_t;
 
-static const prefs_t defaults = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1 };
+static const prefs_t defaults = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, { 0 }, 0 };
 
-static prefs_t prefs = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1 };
+static prefs_t prefs = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, { 0 }, 0 };
 static settings_theme_t eff;            /* preset + overrides; what the shell draws with */
 static bool changed;                    /* a setting changed; main.c re-applies the palette */
 static bool font_changed;               /* ...and the font changed too */
@@ -199,11 +209,108 @@ static void rebuild_theme(void)
         eff.accent = accents[prefs.accent - 1].c;
 }
 
+/* ---------- custom fonts (fontlibc font packs) ----------
+ * Every AppVar that starts with "FONTPACK" is a font pack. Each pack's family name and the
+ * height of each of its fonts (up to 4 per pack) become entries of the Font dropdown. Only
+ * short labels are copied; nothing points into the pack after the scan. */
+typedef struct {
+    char    var[9];                     /* AppVar name */
+    uint8_t index;                      /* font index inside the pack */
+    char    label[16];
+} custom_font_t;
+
+static custom_font_t custom[MAX_CUSTOM];
+static uint8_t custom_count;
+
+#ifndef SHELL_NO_FONTLIBC
+static void put_number(char *dst, unsigned v)       /* appends v to dst (v < 1000) */
+{
+    char tmp[4];
+    int n = 0, i = (int)strlen(dst);
+    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 3);
+    while (n) dst[i++] = tmp[--n];
+    dst[i] = 0;
+}
+
+static void scan_font_packs(void)
+{
+    void *pos = NULL;
+    const char *found;
+
+    custom_count = 0;
+    while (custom_count < MAX_CUSTOM && (found = ti_Detect(&pos, "FONTPACK")) != NULL) {
+        char var[9];
+        uint8_t h;
+        size_t size, i;
+        const uint8_t *base;
+        const fontlib_font_pack_t *pack;
+        char family[11];
+        size_t fam_len = 0;
+
+        strncpy(var, found, 8);
+        var[8] = 0;
+        h = ti_Open(var, "r");
+        if (!h) continue;
+        size = ti_GetSize(h);
+        base = (const uint8_t *)ti_GetDataPtr(h);
+        pack = (const fontlib_font_pack_t *)base;
+        if (size < 16 || !pack->fontCount) { ti_Close(h); continue; }
+
+        /* family name from the metadata when it is present and in range, else the AppVar name */
+        family[0] = 0;
+        if (pack->metadata > 0 && (size_t)pack->metadata + sizeof(fontlib_metadata_t) <= size) {
+            const fontlib_metadata_t *meta = (const fontlib_metadata_t *)(base + pack->metadata);
+            if (meta->length >= (int24_t)sizeof(fontlib_metadata_t) &&
+                meta->font_family_name > 0 && (size_t)meta->font_family_name < size) {
+                const char *src = (const char *)base + meta->font_family_name;
+                size_t room = size - (size_t)meta->font_family_name;
+                while (fam_len < sizeof(family) - 1 && fam_len < room && src[fam_len] >= ' ') {
+                    family[fam_len] = src[fam_len];
+                    fam_len++;
+                }
+                family[fam_len] = 0;
+            }
+        }
+        if (!family[0]) strcpy(family, var);
+
+        for (i = 0; i < pack->fontCount && i < 4 && custom_count < MAX_CUSTOM; i++) {
+            custom_font_t *c = &custom[custom_count];
+            int24_t off = pack->font_list[i];
+            unsigned height = 0;
+
+            if (off > 0 && (size_t)off + 16 <= size)
+                height = ((const fontlib_font_t *)(base + off))->height;
+            strcpy(c->var, var);
+            c->index = (uint8_t)i;
+            strcpy(c->label, family);
+            if (height) {
+                strcat(c->label, " ");
+                put_number(c->label, height);
+            }
+            custom_count++;
+        }
+        ti_Close(h);
+    }
+}
+#else
+static void scan_font_packs(void) { custom_count = 0; }
+#endif
+
+/* index of the custom entry matching the saved name/index, or -1 */
+static int find_custom(const char *var, uint8_t index)
+{
+    int k;
+    for (k = 0; k < custom_count; k++)
+        if (custom[k].index == index && strcmp(custom[k].var, var) == 0)
+            return k;
+    return -1;
+}
+
 /* ---------- storage ---------- */
 static bool sane(const uint8_t *b)       /* b[1..10] = the ten settings */
 {
     return b[1] < THEME_COUNT && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
-           b[4] < FONT_COUNT && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
+           b[4] <= FONT_COUNT && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
 
@@ -216,11 +323,16 @@ static void load_prefs(void)
     prefs = defaults;
     if (h) {
         n = ti_Read(buf, 1, STORE_SIZE, h);
-        if (n == STORE_SIZE && buf[0] == STORE_VERSION && sane(buf)) {
+        if (n >= STORE_SIZE_V2 && (buf[0] == 2 || buf[0] == STORE_VERSION) && sane(buf)) {
             prefs.theme = buf[1];  prefs.wall = buf[2];  prefs.accent = buf[3];
             prefs.font = buf[4];   prefs.bar = buf[5];   prefs.dock = buf[6];
             prefs.speed = buf[7];  prefs.clock24 = buf[8];
             prefs.battery = buf[9]; prefs.tips = buf[10];
+            if (buf[0] == STORE_VERSION && n == STORE_SIZE) {
+                memcpy(prefs.cvar, buf + 11, 8);
+                prefs.cvar[8] = 0;
+                prefs.cidx = buf[20];
+            }
         } else if (n >= 4 && buf[0] == 1 &&              /* old format: theme, speed, clock */
                    buf[1] < THEME_COUNT && buf[2] < 3 && buf[3] < 2) {
             prefs.theme = buf[1];
@@ -229,6 +341,8 @@ static void load_prefs(void)
         }
         ti_Close(h);
     }
+    if (prefs.font == FONT_CUSTOM && find_custom(prefs.cvar, prefs.cidx) < 0)
+        prefs.font = FONT_DEFAULT;                  /* that font pack is no longer installed */
     rebuild_theme();
 }
 
@@ -242,6 +356,9 @@ static void store_prefs(void)
     buf[4] = prefs.font;    buf[5] = prefs.bar;     buf[6] = prefs.dock;
     buf[7] = prefs.speed;   buf[8] = prefs.clock24;
     buf[9] = prefs.battery; buf[10] = prefs.tips;
+    memcpy(buf + 11, prefs.cvar, 8);
+    buf[19] = 0;
+    buf[20] = prefs.cidx;
 
     h = ti_Open(STORE_NAME, "w");
     if (!h) return;
@@ -252,6 +369,7 @@ static void store_prefs(void)
 
 void settings_init(void)
 {
+    scan_font_packs();
     load_prefs();
     changed = false;
     font_changed = false;
@@ -305,7 +423,7 @@ void settings_apply_font(void)
 #endif
     gfx_SetMonospaceFont(0);
     gfx_SetFontSpacing(NULL);                       /* graphx default spacing */
-    if (prefs.font == FONT_DEFAULT) return;
+    if (prefs.font == FONT_DEFAULT || prefs.font == FONT_CUSTOM) return;   /* custom: see ui_text.c */
     for (c = 0; c < 256; c++) {                     /* default widths, shifted by one pixel */
         int w = (int)gfx_GetCharWidth((char)c);
         if (prefs.font == FONT_COMPACT && w > 5) w--;
@@ -316,6 +434,15 @@ void settings_apply_font(void)
     if (prefs.font == FONT_MONO) gfx_SetMonospaceFont(8);
 }
 
+bool settings_custom_font(char var_name[9], uint8_t *font_index)
+{
+    if (prefs.font != FONT_CUSTOM) return false;
+    memcpy(var_name, prefs.cvar, 9);
+    var_name[8] = 0;
+    *font_index = prefs.cidx;
+    return true;
+}
+
 /* ---------- dropdown contents ---------- */
 static int drop_count(int id)
 {
@@ -323,7 +450,7 @@ static int drop_count(int id)
     case W_THEME:  return THEME_COUNT;
     case W_WALL:   return WALL_COUNT;
     case W_ACCENT: return ACCENT_COUNT + 1;
-    case W_FONT:   return FONT_COUNT;
+    case W_FONT:   return FONT_COUNT + custom_count;
     default:       return TINT_COUNT + 1;           /* W_BAR, W_DOCK */
     }
 }
@@ -333,7 +460,7 @@ static const char *drop_item(int id, int i)
     switch (id) {
     case W_THEME:  return theme_names[i];
     case W_WALL:   return wall_names[i];
-    case W_FONT:   return font_names[i];
+    case W_FONT:   return i < FONT_COUNT ? font_names[i] : custom[i - FONT_COUNT].label;
     case W_ACCENT: return i == 0 ? "Theme" : accents[i - 1].name;
     default:       return i == 0 ? "Theme" : tints[i - 1].name;
     }
@@ -345,7 +472,10 @@ static int drop_value(const prefs_t *p, int id)
     case W_THEME:  return p->theme;
     case W_WALL:   return p->wall;
     case W_ACCENT: return p->accent;
-    case W_FONT:   return p->font;
+    case W_FONT: {
+        int k = p->font == FONT_CUSTOM ? find_custom(p->cvar, p->cidx) : -1;
+        return k >= 0 ? FONT_COUNT + k : (p->font < FONT_COUNT ? p->font : FONT_DEFAULT);
+    }
     case W_BAR:    return p->bar;
     default:       return p->dock;
     }
@@ -357,7 +487,15 @@ static void drop_set(prefs_t *p, int id, int v)
     case W_THEME:  p->theme = (uint8_t)v;  break;
     case W_WALL:   p->wall = (uint8_t)v;   break;
     case W_ACCENT: p->accent = (uint8_t)v; break;
-    case W_FONT:   p->font = (uint8_t)v;   break;
+    case W_FONT:
+        if (v < FONT_COUNT) {
+            p->font = (uint8_t)v;
+        } else {
+            p->font = FONT_CUSTOM;
+            strcpy(p->cvar, custom[v - FONT_COUNT].var);
+            p->cidx = custom[v - FONT_COUNT].index;
+        }
+        break;
     case W_BAR:    p->bar = (uint8_t)v;    break;
     default:       p->dock = (uint8_t)v;   break;
     }
@@ -456,7 +594,7 @@ static void mark_item(int i)
 /* ---------- drawing ---------- */
 static void text_color(uint8_t fg)
 {
-    gfx_SetTextFGColor(fg);
+    ui_text_color(fg);
     gfx_SetTextBGColor(255);
     gfx_SetTextTransparentColor(255);
 }
@@ -499,7 +637,7 @@ static void draw_button(int x, int y, int id)
     gfx_SetColor(bg);
     fill_rr(x + r->x, y + r->y, r->w, r->h, 6);
     text_color(fg);
-    gfx_PrintStringXY(s, x + r->x + (r->w - (int)gfx_GetStringWidth(s)) / 2,
+    ui_print(s, x + r->x + (r->w - (int)ui_text_width(s)) / 2,
                          y + r->y + (r->h - 8) / 2);
 }
 
@@ -524,7 +662,7 @@ static void draw_dropdown(int x, int y, int id)
         tx += 12;
     }
     text_color(PAL_TEXT);
-    gfx_PrintStringXY(drop_item(id, v), tx, y + r->y + (r->h - 8) / 2);
+    ui_print(drop_item(id, v), tx, y + r->y + (r->h - 8) / 2);
 
     gfx_SetColor(PAL_TEXT);                         /* chevron */
     gfx_FillTriangle(x + r->x + r->w - 14, y + r->y + 7,
@@ -563,7 +701,7 @@ static void draw_list(int x, int y)
             tx += 12;
         }
         text_color(hot ? PAL_LABEL : PAL_TEXT);
-        gfx_PrintStringXY(drop_item(open_drop, i), tx, iy + (ITEM_H - 8) / 2);
+        ui_print(drop_item(open_drop, i), tx, iy + (ITEM_H - 8) / 2);
     }
 }
 
@@ -572,8 +710,8 @@ static void draw_look_preview(int x, int y)
     gfx_SetColor(PAL_LABEL);
     fill_rr(x + 6, y + 122, 292, 40, 6);
     text_color(PAL_TEXT);
-    gfx_PrintStringXY("atmOS  Aa Bb Cc  0123456789", x + 14, y + 130);
-    gfx_PrintStringXY("The quick brown fox jumps over", x + 14, y + 144);
+    ui_print("atmOS  Aa Bb Cc  0123456789", x + 14, y + 130);
+    ui_print("The quick brown fox jumps over", x + 14, y + 144);
 }
 
 /* a miniature of the real screen: menu bar, wallpaper strip, dock */
@@ -586,8 +724,8 @@ static void draw_taskbar_preview(int x, int y)
     gfx_SetColor(PAL_BAR_LINE);
     gfx_HorizLine(x + 6, y + 133, 292);
     text_color(PAL_TEXT);
-    gfx_PrintStringXY("atmOS", x + 12, y + 123);
-    gfx_PrintStringXY("12:00", x + 262, y + 123);
+    ui_print("atmOS", x + 12, y + 123);
+    ui_print("12:00", x + 262, y + 123);
 
     for (i = 0; i < 4; i++) {                       /* wallpaper */
         gfx_SetColor(PAL_GRAD0 + i * 5);
@@ -628,7 +766,7 @@ void settings_draw_region(int x, int y, int x0, int y0, int x1, int y1)
                      x + WIN_W, y + labels[i].y + 9))
             continue;
         text_color(PAL_TEXT);
-        gfx_PrintStringXY(labels[i].s, x + labels[i].x, y + labels[i].y);
+        ui_print(labels[i].s, x + labels[i].x, y + labels[i].y);
     }
 
     if (tab == 0 && touches(x0, y0, x1, y1, x + 6, y + 122, x + 298, y + 162))
@@ -637,14 +775,14 @@ void settings_draw_region(int x, int y, int x0, int y0, int x1, int y1)
         draw_taskbar_preview(x, y);
     if (tab == 2 && touches(x0, y0, x1, y1, x + 156, y + 126, x + 298, y + 160)) {
         text_color(PAL_TEXT);
-        gfx_PrintStringXY("atmOS for TI-84 Plus CE", x + 156, y + 127);
-        gfx_PrintStringXY("Saved automatically", x + 156, y + 141);
+        ui_print("atmOS for TI-84 Plus CE", x + 156, y + 127);
+        ui_print("Saved automatically", x + 156, y + 141);
     }
 
     if (touches(x0, y0, x1, y1, x, y + CONTENT_H - 10, x + WIN_W, y + CONTENT_H - 2) &&
         open_drop < 0) {
         text_color(PAL_ICON0 + 7);
-        gfx_PrintStringXY("Changes apply right away.", x + 6, y + CONTENT_H - 10);
+        ui_print("Changes apply right away.", x + 6, y + CONTENT_H - 10);
     }
 
     if (open_drop >= 0) {
@@ -711,15 +849,20 @@ int settings_dirty(int x, int y, int r[][4], int max)
 static void apply(const prefs_t *next)
 {
     prefs_t old = prefs;
+    bool font_diff, look_diff;
     int id;
 
     if (memcmp(&old, next, sizeof(old)) == 0) return;   /* nothing changed: skip the flash write */
     prefs = *next;
     rebuild_theme();
 
-    if (old.font != next->font) font_changed = true;
-    if (old.theme != next->theme || old.wall != next->wall || old.accent != next->accent ||
-        old.font != next->font || old.bar != next->bar || old.dock != next->dock) {
+    font_diff = old.font != next->font || old.cidx != next->cidx ||
+                strcmp(old.cvar, next->cvar) != 0;
+    look_diff = font_diff || old.theme != next->theme || old.wall != next->wall ||
+                old.accent != next->accent || old.bar != next->bar || old.dock != next->dock;
+    if (font_diff) font_changed = true;
+
+    if (look_diff) {
         mark_all();                                 /* colors / text widths changed everywhere */
     } else {
         for (id = 0; id < W_COUNT; id++)            /* only buttons whose selection flipped */

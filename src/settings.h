@@ -29,6 +29,10 @@ bool settings_take_font_changed(void);          /* true once after the font chan
 /* Applies the chosen font to graphx. Call after gfx_Begin() and after a font change. */
 void settings_apply_font(void);
 
+/* A custom fontlibc font (font pack AppVar, e.g. from cefont) is selected: fills the AppVar name
+ * and the font's index inside the pack. False when a built-in font is in use. */
+bool settings_custom_font(char var_name[9], uint8_t *font_index);
+
 /* app hooks */
 void settings_open(void);                       /* call when the window opens */
 void settings_draw(int x, int y);

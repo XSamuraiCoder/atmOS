@@ -13,6 +13,7 @@
 #include <string.h>
 #include "notes.h"
 #include "settings.h"
+#include "ui_text.h"
 #include "debug_stack.h"
 
 /* palette indices (same as main.c / files.c) */
@@ -257,7 +258,7 @@ bool notes_find_program(const char **name, uint8_t *var_type, uint8_t *program_k
 /* ---------- drawing ---------- */
 static void text_color(uint8_t fg)
 {
-    gfx_SetTextFGColor(fg);
+    ui_text_color(fg);
     gfx_SetTextBGColor(255);
     gfx_SetTextTransparentColor(255);
 }
@@ -268,8 +269,8 @@ static void print_clipped(const char *s, int len, int x, int y, int max_w)
     if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
     memcpy(buf, s, (size_t)len);
     buf[len] = 0;
-    while (len > 0 && (int)gfx_GetStringWidth(buf) > max_w) buf[--len] = 0;
-    gfx_PrintStringXY(buf, x, y);
+    while (len > 0 && (int)ui_text_width(buf) > max_w) buf[--len] = 0;
+    ui_print(buf, x, y);
 }
 
 static void draw_row(int x, int y, int r, bool hot)
@@ -283,7 +284,7 @@ static void draw_row(int x, int y, int r, bool hot)
         gfx_SetColor(full ? PAL_BAR_LINE : PAL_ACCENT);
         gfx_FillRectangle(rx, ry, ROW_W, ROW_H);
         text_color(PAL_LABEL);
-        gfx_PrintStringXY(full ? "Notes full - delete one" : "+  New note", rx + 8, ry + 6);
+        ui_print(full ? "Notes full - delete one" : "+  New note", rx + 8, ry + 6);
         if (hot && !full) {
             gfx_SetColor(PAL_LABEL);
             gfx_Rectangle(rx, ry, ROW_W, ROW_H);
@@ -304,12 +305,12 @@ static void draw_row(int x, int y, int r, bool hot)
 
         if (warn) {
             text_color(PAL_LABEL);
-            gfx_PrintStringXY("Press del again to delete", rx + 8, ry + 6);
+            ui_print("Press del again to delete", rx + 8, ry + 6);
             return;
         }
         while (tl < n->len && n->text[tl] != '\n') tl++;
         text_color(PAL_TEXT);
-        if (tl == 0) gfx_PrintStringXY("(empty)", rx + 8, ry + 6);
+        if (tl == 0) ui_print("(empty)", rx + 8, ry + 6);
         else print_clipped(n->text, tl, rx + 8, ry + 6, ROW_W - 70);
 
         /* "<len>c" right-aligned, gray */
@@ -321,9 +322,9 @@ static void draw_row(int x, int y, int r, bool hot)
             cnt[k++] = 'c';
             cnt[k] = 0;
         }
-        w = gfx_GetStringWidth(cnt);
+        w = ui_text_width(cnt);
         text_color(PAL_ICON0 + 7);
-        gfx_PrintStringXY(cnt, rx + ROW_W - 8 - w, ry + 6);
+        ui_print(cnt, rx + ROW_W - 8 - w, ry + 6);
     }
 }
 
@@ -333,7 +334,7 @@ static void draw_list(int x, int y)
     for (r = 0; r <= note_count; r++) draw_row(x, y, r, r == hover_row);
 
     text_color(PAL_TEXT);
-    gfx_PrintStringXY(note_count ? "del: delete hovered note" : "No notes yet",
+    ui_print(note_count ? "del: delete hovered note" : "No notes yet",
                       x + ROW_X, y + CONTENT_H - 16);
 }
 
@@ -372,7 +373,7 @@ static void draw_editor(int x, int y)
 
     /* status line: input mode on the left, usage on the right */
     text_color(PAL_TEXT);
-    gfx_PrintStringXY(alpha_on ? (lower_on ? "ALPHA abc" : "ALPHA ABC") : "123", x + BOX_X, y + BOX_Y + BOX_H + 6);
+    ui_print(alpha_on ? (lower_on ? "ALPHA abc" : "ALPHA ABC") : "123", x + BOX_X, y + BOX_Y + BOX_H + 6);
     {
         int v = n->len, k = 0, t = 0, w;
         char tmp[8];
@@ -383,11 +384,11 @@ static void draw_editor(int x, int y)
         do { tmp[t++] = (char)('0' + v % 10); v /= 10; } while (v && t < 6);
         while (t) info[k++] = tmp[--t];
         info[k] = 0;
-        w = gfx_GetStringWidth(info);
-        gfx_PrintStringXY(info, x + WIN_W - BOX_X - w, y + BOX_Y + BOX_H + 6);
+        w = ui_text_width(info);
+        ui_print(info, x + WIN_W - BOX_X - w, y + BOX_Y + BOX_H + 6);
     }
     text_color(PAL_ICON0 + 7);
-    gfx_PrintStringXY("alpha:letters  2nd:case  del:erase  clear:back",
+    ui_print("alpha:letters  2nd:case  del:erase  clear:back",
                       x + BOX_X, y + CONTENT_H - 10);
 }
 
