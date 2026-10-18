@@ -128,10 +128,10 @@ jobs:
 
           cefont build fonts/sans-serif.ttf --name SANSERIF
           cefont build fonts/fredoka.ttf --name FREDOKA
-          cefont build fonts/benchmark.ttf --name BENCHMARK
+          cefont build fonts/benchmark.ttf --name BENCHMAR
           cefont build fonts/bungee.ttf --name BUNGEE
 
-          for name in SANSERIF FREDOKA BENCHMARK BUNGEE; do
+          for name in SANSERIF FREDOKA BENCHMAR BUNGEE; do
             file="$(find . -maxdepth 1 -type f \
               -iname "${name}.8xv" -print -quit)"
 
