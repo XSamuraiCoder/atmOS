@@ -126,10 +126,10 @@ jobs:
         run: |
           mkdir -p "dist/extra fonts"
 
-          cefont build fonts/sans-serif.ttf --name SANSERIF
-          cefont build fonts/fredoka.ttf --name FREDOKA
-          cefont build fonts/benchmark.ttf --name BENCHMAR
-          cefont build fonts/bungee.ttf --name BUNGEE
+          cefont build fonts/sans-serif.ttf --name SANSERIF --size 12
+          cefont build fonts/fredoka.ttf --name FREDOKA --size 12
+          cefont build fonts/benchmark.ttf --name BENCHMAR --size 12
+          cefont build fonts/bungee.ttf --name BUNGEE --size 12
 
           for name in SANSERIF FREDOKA BENCHMAR BUNGEE; do
             file="$(find . -maxdepth 1 -type f \
