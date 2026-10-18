@@ -1,10 +1,6 @@
+
 name: Build atmOS
 
-# Builds the Flash App, installer and libraries on every push (and pull request) and publishes
-# the result:
-#   - every run: an artifact named atmOS (downloads as atmOS.zip) holding atmOS.x.8xv,
-#     INSTALL.8xp and clibs.8xg (Actions tab -> the run)
-#   - pushes to the default branch: also atmOS.zip on a rolling "nightly" pre-release
 on:
   push:
   pull_request:
@@ -15,7 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # CE C/C++ Toolchain release to build with (keep in step with the version you use locally)
   CEDEV_VERSION: v15.0
 
 permissions:
@@ -25,7 +20,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # only used to update the rolling release
+      contents: write
 
     steps:
       - name: Check out
@@ -43,9 +38,14 @@ jobs:
       - name: Install the toolchain
         if: steps.cedev-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL "https://github.com/CE-Programming/toolchain/releases/download/${CEDEV_VERSION}/CEdev-Linux.tar.gz" -o cedev.tar.gz
+          curl -fsSL \
+            "https://github.com/CE-Programming/toolchain/releases/download/${CEDEV_VERSION}/CEdev-Linux.tar.gz" \
+            -o cedev.tar.gz
+
           tar -xzf cedev.tar.gz -C "$HOME"
+
           test -x "$HOME/CEdev/bin/cedev-config"
+          test -x "$HOME/CEdev/bin/convfont"
 
       - name: Set up the environment
         run: |
@@ -53,51 +53,129 @@ jobs:
           echo "$HOME/CEdev/bin" >> "$GITHUB_PATH"
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
-      # Build folders that were committed from a Windows machine hold dependency files
-      # (obj/**/*.d) with C:\ paths. GNU make on Linux reads those and stops with
-      # "multiple target patterns", so always build from a clean slate.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install cefont
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cefont fonttools brotli
+          cefont --help
+
       - name: Remove stale build output
         run: rm -rf obj bin installer/obj installer/bin
 
-      # Files edited on Windows can have CRLF line endings. GNU make passes the stray CR to the
-      # shell and GNU as can put it into section names, so normalise them for this Linux build.
-      # The second expression adds the missing final newline that GNU as warns about.
-      - name: Normalise line endings
+      - name: Normalize line endings
         run: |
-          find . -type f \( -name 'Makefile' -o -name '*.mk' -o -name '*.s' -o -name '*.S' \
-            -o -name '*.ld' -o -name '*.yaml' \) -not -path './.git/*' \
+          find . -type f \( \
+            -name 'Makefile' -o \
+            -name '*.mk' -o \
+            -name '*.s' -o \
+            -name '*.S' -o \
+            -name '*.ld' -o \
+            -name '*.yaml' \
+          \) -not -path './.git/*' \
             -exec sed -i -e 's/\r$//' -e '$a\' {} +
 
-      - name: Build (app, installer, libraries)
+      - name: Download font sources
+        run: |
+          mkdir -p fonts "dist/extra fonts"
+
+          download_font() {
+            local family="$1"
+            local filename="$2"
+
+            curl -fLsS \
+              -H 'User-Agent: Mozilla/5.0' \
+              "https://fonts.googleapis.com/css2?family=${family}:wght@400;700&display=swap" \
+              -o "fonts/${filename}.css"
+
+            local url
+            url="$(grep -oE 'https://fonts\.gstatic\.com/[^)]+' \
+              "fonts/${filename}.css" | head -n 1)"
+
+            if [ -z "$url" ]; then
+              echo "Could not find font URL for ${family}" >&2
+              exit 1
+            fi
+
+            curl -fLsS "$url" -o "fonts/${filename}.woff2"
+          }
+
+          download_font "Open+Sans" "sans-serif"
+          download_font "Fredoka" "fredoka"
+          download_font "BenchNine" "benchmark"
+          download_font "Bungee" "bungee"
+
+          python - <<'PY'
+          from pathlib import Path
+          from fontTools.ttLib import TTFont
+
+          for source in Path("fonts").glob("*.woff2"):
+              target = source.with_suffix(".ttf")
+              font = TTFont(source)
+              font.flavor = None
+              font.save(target)
+              print(f"Converted {source} -> {target}")
+          PY
+
+      - name: Build FontLibC fonts
+        run: |
+          mkdir -p "dist/extra fonts"
+
+          cefont build fonts/sans-serif.ttf --name SANSERIF
+          cefont build fonts/fredoka.ttf --name FREDOKA
+          cefont build fonts/benchmark.ttf --name BENCHMARK
+          cefont build fonts/bungee.ttf --name BUNGEE
+
+          for name in SANSERIF FREDOKA BENCHMARK BUNGEE; do
+            file="$(find . -maxdepth 1 -type f \
+              -iname "${name}.8xv" -print -quit)"
+
+            if [ -z "$file" ]; then
+              echo "Missing generated font AppVar: ${name}.8xv" >&2
+              exit 1
+            fi
+
+            cp "$file" "dist/extra fonts/"
+          done
+
+          ls -lh "dist/extra fonts/"
+
+      - name: Build app, installer, and libraries
         run: make package
 
-      # Only the files you send to the calculator: the app as AppVars (atmOS.0.8xv, atmOS.1.8xv, ...
-      # if it ever grows past one variable), the installer and the libraries. cp fails the step
-      # if any of them is missing.
-      - name: Collect the files to publish
+      - name: Collect build outputs
         run: |
-          mkdir dist
-          cp bin/atmOS.*.8xv bin/INSTALL.8xp bin/clibs.8xg readme.txt dist/
-          ls -la dist
+          cp bin/atmOS.*.8xv dist/
+          cp bin/INSTALL.8xp bin/clibs.8xg readme.txt dist/
 
-      - name: Zip the outputs
-        run: (cd dist && zip -r ../atmOS.zip .)
+          ls -lh dist/
+          ls -lh "dist/extra fonts/"
 
-      - name: Upload the build
+      - name: Create ZIP
+        run: |
+          cd dist
+          zip -r ../atmOS.zip .
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          # GitHub always downloads an artifact as a zip, so an artifact named "atmOS" is
-          # downloaded as atmOS.zip with the three files directly inside.
           name: atmOS
           path: dist/
           if-no-files-found: error
+          compression-level: 9
 
-      - name: Update the rolling release
+      - name: Update nightly release
         if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete nightly --cleanup-tag --yes || true
+
           gh release create nightly atmOS.zip \
             --prerelease \
             --target "$GITHUB_SHA" \
