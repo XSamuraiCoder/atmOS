@@ -40,7 +40,8 @@ installer:
 installer-clean:
 	$(Q)$(MAKE) -C installer clean
 
-clean: installer-clean
+clean:
+	$(Q)$(MAKE) -C clean
 
 package: appvars installer libraries
 

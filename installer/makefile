@@ -1,20 +1,19 @@
 # ----------------------------------------------------
 # atmOS installer - CEdev project (program + assembly)
 # ----------------------------------------------------
-# Installs the atmOS Flash App on the calculator from split AppVars
-# ("ATMOS0", "ATMOS1", ...): erases the flash pages behind the last app,
-# writes the image, appends its size, then applies the app's relocation
-# table. See README.md and src/config.h for the packaging contract.
 
 NAME ?= ATMOS
 DESCRIPTION ?= "atmOS Flash App installer"
 ARCHIVED ?= NO
 
+APPVAR_SPLIT_SIZE ?= 0x7F00
+
 CFLAGS   ?= -Wall -Wextra -O2
 CXXFLAGS ?= -Wall -Wextra -O2
 
-# ----------------------------------------------------
+CFLAGS   += -DAPPVAR_SPLIT_SIZE=$(APPVAR_SPLIT_SIZE)
+CXXFLAGS += -DAPPVAR_SPLIT_SIZE=$(APPVAR_SPLIT_SIZE)
 
-# same way the atmOS shell's Makefile finds CEdev (cedev-config must be on PATH);
-# makefile.mk assembles src/*.asm (ez80-asm) and links it with the program
+# ----------------------------------------------------
+# Load CEdev build rules
 include $(shell cedev-config --makefile)
