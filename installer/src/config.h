@@ -19,4 +19,9 @@
  * header with the name field). */
 #define APP_NAME_OFFSET (256 + 3)
 
+/* The SHLSET layout and the setting choices are copied from the shell's settings.c
+ * into main.c. If you change them in the shell (new theme, wallpaper, tint, accent,
+ * STORE_VERSION / STORE_SIZE), change them there too. Font packs are found the same
+ * way the shell does: every AppVar whose name starts with "FONTPACK". */
+
 #endif
