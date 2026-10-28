@@ -1,5 +1,19 @@
+; app.asm - installer support routines (eZ80, ADL)
+	;
+	;   os_FindAppStart   - OS jump-table wrapper (address depends on the OS version;
+	;                       port_setup must have accepted the OS)
+	;   find_last_app     - scans application headers to the end of the last app
+	;   fix_relocations   - applies the app's relocation table at its flash address
+	;   confirm_delete_vars - on-screen Yes/No prompt
+	;   delete_var        - delete an archived or RAM variable by name + type
+
 	.assume	adl=1
 	.section	.text
+
+	; The app's data-section base address: relocation table entries at or above
+	; 0x800000 are data-relative and biased by this base. MUST match the value the
+	; app was packaged with (the app build's linker script / data base).
+	.equ	APP_DATA_BASE, 0x0D0000
 
 	.global	_os_FindAppStart
 	.equ	_os_FindAppStart, 0x21100
