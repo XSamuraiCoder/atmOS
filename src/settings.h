@@ -19,9 +19,20 @@ typedef struct {
 /* values used by the shell */
 void settings_init(void);                       /* load saved settings; call once per start */
 const settings_theme_t *settings_theme(void);   /* effective colors (preset + taskbar/accent/wallpaper choices) */
+
+/* Runtime theme registry: mods add theme presets (atmos_api_t.register_theme) after
+ * settings_init. Indices 0..5 are the built-ins; registered themes follow, and
+ * prefs.theme indexes the combined list. Registering a name twice returns the
+ * existing index. */
+#define SETTINGS_MOD_THEME_MAX 4
+int  settings_theme_count(void);                 /* built-in + registered themes */
+const char *settings_theme_name(int index);      /* dropdown label; "?" when out of range */
+const settings_theme_t *settings_theme_lookup(int index);   /* clamped to theme 0 when invalid */
+int  settings_register_theme(const char *name, const settings_theme_t *theme);   /* index or -1 */
+bool settings_select_theme(int index);           /* make theme[index] active now: saved, applied the same frame (the mod API's apply_theme) */
 uint8_t settings_pointer_speed(void);           /* 0 = slow, 1 = normal, 2 = fast */
 bool settings_clock_24h(void);                  /* false = 12-hour with AM/PM */
-bool settings_show_battery(void);               /* menu bar battery indicator */
+bool settings_show_battery(void);                /* menu bar battery indicator */
 bool settings_dock_labels(void);                /* tooltip with the app name over the dock */
 bool settings_take_changed(void);               /* true once after a change: re-apply the palette */
 bool settings_take_font_changed(void);          /* true once after the font changed: redraw everything */

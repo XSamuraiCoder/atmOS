@@ -104,6 +104,7 @@ bool files_cancel_menu(void)
     return false;
 }
 
+uint8_t files_program_kind(const char *name, uint8_t type) { (void)name; (void)type; return 2; }
 bool files_take_launch_request(const char **prgm, void **app_header,
                                uint8_t *program_kind, uint8_t *var_type)
 {
@@ -144,6 +145,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include "files.h"
 #include "debug_stack.h"
 #include "ui_text.h"
+#include "program_kind.h"
 
 /* palette indices - must match the enum in main.c */
 enum {
@@ -180,14 +182,13 @@ enum {
 #define NAV_GAP    4
 #define NAV_X0     ((WIN_W - (3 * NAV_W + 2 * NAV_GAP)) / 2)
 
-#define MAX_VARS 64     /* RAM: a Flash App only gets ~12 KB for data + stack */
-#define MAX_APPS 24
+/* Keep these modest: vars[] is BSS and every byte here is a byte the C stack
+ * cannot use. 256+48 was enough to NMI-reset CEmu (stack-limit write) once
+ * icon buffers and the main loop shared the same tight stack. */
+#define MAX_VARS 64
+#define MAX_APPS 16
 #define MAX_ITEMS (MAX_VARS + MAX_APPS)
 #define OS_TYPE_APP FILES_TYPE_APP
-#define PROGRAM_ASM 0
-#define PROGRAM_C 1
-#define PROGRAM_BASIC 2
-#define PROGRAM_ICE 3
 #define ICON_PALETTE_START 30
 #define ICON_PALETTE_LEVELS 6
 #define ICON_PALETTE_COUNT \
@@ -211,7 +212,7 @@ static file_var_t vars[MAX_ITEMS];
 static int var_count = 0;
 
 /* visible items: indices into vars[], rebuilt when changing folders */
-static uint8_t view[MAX_ITEMS];   /* MAX_ITEMS <= 255 */
+static uint16_t view[MAX_ITEMS];
 static int  view_count = 0;
 static folder_t cur_folder = F_PROGRAMS;
 
@@ -523,7 +524,10 @@ static uint8_t color_icon_pixel(uint8_t ch)
 
 static bool read_program_icon(uint8_t handle, uint8_t *icon)
 {
-    uint8_t data[ICON_READ_SIZE];
+    /* static: called from the draw path; 280 bytes on the C stack on top of
+     * render_frame + files_draw_region is enough to collide with the heap/VAT
+     * on a busy Files page and RAM-clear the calc. */
+    static uint8_t data[ICON_READ_SIZE];
     size_t size = ti_GetSize(handle);
     NOTE_STACK();
     size_t bytes = size < sizeof(data) ? size : sizeof(data);
@@ -677,17 +681,7 @@ static void add_var(const char *name, uint8_t type)
                 uint8_t signature[5];
                 size_t count = ti_Read(signature, 1, sizeof(signature), handle);
 
-                if (count >= 3 &&
-                    signature[0] == OS_TOK_2BYTE_EXT &&
-                    (signature[1] == OS_TOK_ASM_84CE_PRGM_CMP ||
-                     signature[1] == OS_TOK_ASM_84C_PRGM_CMP)) {
-                    if (signature[2] == 0)
-                        v->program_kind = PROGRAM_C;
-                    else if (signature[2] == 0x7F)
-                        v->program_kind = PROGRAM_ICE;
-                    else
-                        v->program_kind = PROGRAM_ASM;
-                }
+                v->program_kind = program_kind_from_signature(signature, count);
             }
             ti_Close(handle);
         }
@@ -871,10 +865,12 @@ static void draw_file_icon(uint8_t type, int x, int y)
 
 #ifndef FILES_NO_ICONS
 /* The icon is drawn at 2x. A full 32x32 sprite would be a 1 KB local on a stack that only has
- * a few KB in total, so it is built and drawn in four 32x8 bands (258 bytes at a time). */
+ * a few KB in total, so it is built and drawn in four 32x8 bands (258 bytes at a time).
+ * band_data is static for the same reason as read_program_icon's buffer: this runs
+ * from the draw path and must not push SP into the heap/VAT. */
 static void draw_program_icon(const uint8_t *icon, int x, int y)
 {
-    uint8_t band_data[2 + 32 * 8];
+    static uint8_t band_data[2 + 32 * 8];
     int dx = x + (TILE_W - 32) / 2, dy = y + 2;
     int band, i, j;
 
@@ -1411,6 +1407,20 @@ void files_draw_region(int x, int y, int x0, int y0, int x1, int y1)
 void files_draw(int x, int y)
 {
     files_draw_region(x, y, 0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
+}
+
+/* Looks at the program now (the kind stored in a pin may be old, or the program may have been
+ * replaced since) and says how to run it. */
+uint8_t files_program_kind(const char *name, uint8_t type)
+{
+    uint8_t signature[5];
+    uint8_t handle = ti_OpenVar(name, "r", type);
+    size_t count;
+
+    if (!handle) return PROGRAM_BASIC;
+    count = ti_Read(signature, 1, sizeof(signature), handle);
+    ti_Close(handle);
+    return program_kind_from_signature(signature, count);
 }
 
 /* Returns true after a selected file is clicked again. */

@@ -14,6 +14,7 @@
 #include "notes.h"
 #include "settings.h"
 #include "ui_text.h"
+#include "program_kind.h"
 #include "debug_stack.h"
 
 /* palette indices (same as main.c / files.c) */
@@ -58,10 +59,6 @@ static int row_step(void)
 #define COLS        ((BOX_W - 8) / CELL_W)
 #define ROWS        ((BOX_H - 8) / LINE_H)
 
-#define PROGRAM_ASM   0
-#define PROGRAM_C     1
-#define PROGRAM_BASIC 2
-#define PROGRAM_ICE   3
 
 typedef struct {
     uint16_t len;
@@ -247,15 +244,8 @@ bool notes_find_program(const char **name, uint8_t *var_type, uint8_t *program_k
         uint8_t h = ti_OpenVar(prgm_name, "r", types[i]);
         if (h) {
             uint8_t sig[3];
-            uint8_t kind = PROGRAM_BASIC;
-            if (ti_Read(sig, 1, sizeof(sig), h) == sizeof(sig) &&
-                sig[0] == OS_TOK_2BYTE_EXT &&
-                (sig[1] == OS_TOK_ASM_84CE_PRGM_CMP ||
-                 sig[1] == OS_TOK_ASM_84C_PRGM_CMP)) {
-                if (sig[2] == 0)         kind = PROGRAM_C;
-                else if (sig[2] == 0x7F) kind = PROGRAM_ICE;
-                else                     kind = PROGRAM_ASM;
-            }
+            uint8_t kind = ti_Read(sig, 1, sizeof(sig), h) == sizeof(sig)
+                         ? program_kind_from_signature(sig, sizeof(sig)) : PROGRAM_BASIC;
             ti_Close(h);
             *name = prgm_name;
             *var_type = types[i];

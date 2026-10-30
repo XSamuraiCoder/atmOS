@@ -12,6 +12,11 @@
  * step 3: Files lists programs, AppVars, and installed Flash Apps. The Flash
  * App build can launch Flash Apps through a TI OS handoff, but cannot run
  * calculator programs through os_RunPrgm.
+ *
+ * step 4: mods. AppVars whose data starts with "atmOS mod: " are loaded at
+ * startup (mods.c); each may register apps (dock icons + windows) and theme
+ * presets. Registered apps open like the built-ins through the APP_MOD
+ * dispatch below.
  */
 
 #include <graphx.h>
@@ -22,6 +27,7 @@
 #include "files.h"
 #include "notes.h"
 #include "settings.h"
+#include "mods.h"
 #include "debug_stack.h"
 #include "ui_text.h"
 #ifndef SHELL_FLASH_APP
@@ -33,6 +39,7 @@
 #endif
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if __has_include("gfx/gfx.h")
@@ -80,20 +87,22 @@ typedef struct {
     int8_t  app;     /* index into apps[], or -1 = no app yet */
     uint8_t type;
     uint8_t program_kind;
+    int8_t  mod;     /* index into mods_app() when app == APP_MOD */
 } entry_t;
 
 #define APP_PLACEHOLDER 0   /* indices into apps[] */
 #define APP_FILES       1
 #define APP_NOTES       2
 #define APP_SETTINGS    3
+#define APP_MOD         4   /* a mod-registered app; open_mod says which */
 #define ENTRY_NOTES     1   /* dock index of NOTES */
 #define BUILTIN_ENTRY_COUNT 3
-#define MAX_DOCK_ENTRIES (BUILTIN_ENTRY_COUNT + FILES_MAX_PINS)
+#define MAX_DOCK_ENTRIES (BUILTIN_ENTRY_COUNT + FILES_MAX_PINS + MODS_MAX_APPS)
 
 static entry_t entries[MAX_DOCK_ENTRIES] = {
-    { "FILES",   3, 0, APP_FILES, 0, 0 },
-    { "NOTES",   1, 0, APP_NOTES, 0, 0 },
-    { "SETTING", 7, 0, APP_SETTINGS, 0, 0 },
+    { "FILES",   3, 0, APP_FILES, 0, 0, -1 },
+    { "NOTES",   1, 0, APP_NOTES, 0, 0, -1 },
+    { "SETTING", 7, 0, APP_SETTINGS, 0, 0, -1 },
 };
 static int entry_count = BUILTIN_ENTRY_COUNT;
 static uint8_t dock_pin_sprites[FILES_MAX_PINS][2 + 16 * 16];
@@ -216,6 +225,7 @@ static bool bar_tick(void)           /* true when the bar needs a redraw */
 }
 
 static uintptr_t min_sp = (uintptr_t)-1;
+static bool own_stack;                 /* NEW: true once the shell runs on its malloc'd stack */
 
 void shell_note_stack(void)
 {
@@ -234,6 +244,8 @@ static void draw_stack_debug(void)
         s[3 + i] = hex[(min_sp >> (20 - 4 * i)) & 15];
     s[9] = 0;
     ui_print(s, 118, 3);
+    if (!own_stack)
+        ui_print("OSSTK", 184, 3);     /* NEW: no stack of our own: the OS stack is in use */
 }
 #endif
 
@@ -314,6 +326,7 @@ typedef struct {
 
 static int open_app = -1;          /* index into apps[], or -1 = no window */
 static int open_entry = -1;        /* dock entry that opened it */
+static int open_mod = -1;          /* index into mods_app() while open_app == APP_MOD */
 
 static void text_color(uint8_t fg)
 {
@@ -338,10 +351,50 @@ extern void *flash_apps_find_app(const char *name);
 extern void asm_runProgram_run(const char *name, uint8_t var_type,
                                uint8_t program_kind, const void *preferences)
     __attribute__((noreturn));
+/* BSS-zeroed. The runner may read this on return-to-shell; zeros are safe
+ * defaults until a real SHLSET pack is written here. */
 static uint8_t program_runner_preferences[20];
 #else
 static void run_program(const char *name);
 #endif
+
+/* ---------- mod app dispatch (mods.c) ----------
+ * A mod's registered atmos_app_t hooks are all optional except draw. A mod
+ * window gets a full repaint on every change (no draw_region / dirty). */
+static const atmos_app_t *cur_mod(void)
+{
+    return open_app == APP_MOD ? mods_app(open_mod) : NULL;
+}
+static void mod_draw(int x, int y)
+{
+    const atmos_app_t *a = cur_mod();
+    if (a) a->draw(x, y);
+}
+static void mod_click(int x, int y)
+{
+    const atmos_app_t *a = cur_mod();
+    if (a && a->click) a->click(x, y);
+}
+static bool mod_tick(void)
+{
+    const atmos_app_t *a = cur_mod();
+    return a && a->tick && a->tick();
+}
+static bool mod_hover(int x, int y)
+{
+    const atmos_app_t *a = cur_mod();
+    return a && a->hover && a->hover(x, y);
+}
+static bool mod_keys(void)
+{
+    const atmos_app_t *a = cur_mod();
+    return a && a->keys && a->keys();
+}
+static bool mod_press(void)
+{
+    const atmos_app_t *a = cur_mod();
+    return a && a->press && a->press();
+}
 
 /* ---------- app table (add new apps here) ---------- */
 static const app_t apps[] = {
@@ -354,6 +407,8 @@ static const app_t apps[] = {
     { "Settings", settings_draw, settings_click, NULL, settings_hover,
       settings_keys, settings_press, settings_draw_region,
       settings_dirty },                                           /* APP_SETTINGS */
+    { NULL, mod_draw, mod_click, mod_tick, mod_hover,
+      mod_keys, mod_press, NULL, NULL },                          /* APP_MOD */
 };
 
 static bool in_window(void)
@@ -367,7 +422,28 @@ static void close_window(void)
 {
     open_app = -1;
     open_entry = -1;
+    open_mod = -1;
     strcpy(status, OS_NAME);
+}
+
+/* ---------- dock entries for mod-registered apps ---------- */
+static void sync_dock_mods(void)
+{
+    int i, n = mods_app_count();
+
+    for (i = 0; i < n && entry_count < MAX_DOCK_ENTRIES; i++) {
+        const atmos_app_t *a = mods_app(i);
+        entry_t *e = &entries[entry_count++];
+
+        strncpy(e->name, a->title, 8);
+        e->name[8] = 0;
+        e->color = a->color < 8 ? a->color : 7;
+        e->flags = 0;
+        e->app = APP_MOD;
+        e->type = 0;
+        e->program_kind = 0;
+        e->mod = (int8_t)i;
+    }
 }
 
 static void sync_dock_pins(void)
@@ -389,11 +465,20 @@ static void sync_dock_pins(void)
         entry->app = -1;
         entry->type = pins[i].type;
         entry->program_kind = pins[i].program_kind;
-        dock_pin_has_icon[i] = files_load_pin_icon(
-            &pins[i], dock_pin_sprites[i] + 2);
+        entry->mod = -1;
+        /* Skip Flash App pin icons at sync time: flash_apps_find_app hits
+         * OS-version-specific entry points; a mismatch in CEmu can NMI-reset
+         * before the shell draws a frame. Program pins still get icons. */
+        if (pins[i].type == FILES_TYPE_APP)
+            dock_pin_has_icon[i] = false;
+        else
+            dock_pin_has_icon[i] = files_load_pin_icon(
+                &pins[i], dock_pin_sprites[i] + 2);
     }
     for (; i < FILES_MAX_PINS; i++)
         dock_pin_has_icon[i] = false;
+
+    sync_dock_mods();      /* mods stay after the built-ins and pins */
 }
 
 static void launch(const entry_t *e)
@@ -415,12 +500,18 @@ static void launch(const entry_t *e)
     }
 
     if (e->app >= 0) {
+        const atmos_app_t *a;
         open_app = e->app;
         open_entry = (int)(e - entries);
         strcpy(status, e->name);
         if (e->app == APP_FILES) files_open();   /* rescan the VAT on open */
         if (e->app == APP_NOTES) notes_open();
         if (e->app == APP_SETTINGS) settings_open();
+        if (e->app == APP_MOD) {                 /* a mod-registered app */
+            open_mod = e->mod;
+            a = mods_app(open_mod);
+            if (a && a->open) a->open();
+        }
         return;
     }
 
@@ -434,7 +525,8 @@ static void launch(const entry_t *e)
     }
 #ifdef SHELL_FLASH_APP
     end_graphics();
-    asm_runProgram_run(e->name, e->type, e->program_kind,
+    /* the kind saved in a pin can be stale; look at the program again */
+    asm_runProgram_run(e->name, e->type, files_program_kind(e->name, e->type),
                        program_runner_preferences);
 #else
     run_program(e->name);
@@ -764,7 +856,7 @@ static void save_keys(void)
 
 #define PTR_SHIFT    8
 #define PTR_MIN_PXS  30
-#define PTR_MAX_PXS 240
+#define PTR_MAX_PXS  240
 #define PTR_RAMP_MS  250
 #define FRAME_HZ     60
 
@@ -822,6 +914,7 @@ static void reset_shell_state(void)
 
     open_app = -1;
     open_entry = -1;
+    open_mod = -1;
     memset(slot, 0, sizeof(slot));
     memset(window_dirty, 0, sizeof(window_dirty));
     memset(pending, 0, sizeof(pending));
@@ -887,10 +980,11 @@ static void run_program(const char *name)
 }
 #endif
 
-int main(void)
+static int shell_main(void)
 {
     bool running = true;
     bool dirty = true;               /* scene changed: both buffers need a full redraw */
+    bool booted = false;             /* NEW: mods_boot_ok() still pending */
     int hover = -1, last_hover = -1;
     bool was_in_win = false;         /* pointer was over the app window last frame */
 
@@ -900,11 +994,12 @@ int main(void)
 
     reset_shell_state();
     settings_init();
+    mods_load_all();                 /* "atmOS mod: " AppVars: apps + themes registered */
     begin_graphics();
 #ifdef HAVE_ICONS
     prepare_builtin_dock_icons();
 #endif
-    sync_dock_pins();
+    sync_dock_pins();                 /* built-ins + pins, then mod entries (via sync_dock_mods) */
 
     kb_Scan();                       /* so a held launch key isn't a click */
     save_keys();
@@ -917,6 +1012,10 @@ int main(void)
                 (open_app == APP_NOTES && notes_cancel()) ||
                 (open_app == APP_SETTINGS && settings_cancel())) {
                 dirty = true;
+            } else if (open_app == APP_MOD && mods_app(open_mod) &&
+                       mods_app(open_mod)->cancel &&
+                       mods_app(open_mod)->cancel()) {
+                dirty = true;        /* a mod handled Clear inside its window */
             } else if (open_app >= 0) {
                 close_window();
                 dirty = true;
@@ -935,6 +1034,11 @@ int main(void)
             if (open_app >= 0 && apps[open_app].tick && apps[open_app].tick())
                 dirty = true;
             if (bar_tick()) dirty = true;
+            if (mods_take_redraw()) dirty = true;         /* a mod asked for a repaint */
+            if (mods_take_close() && open_app >= 0) {     /* a mod asked to close */
+                close_window();
+                dirty = true;
+            }
 
             /* let the open app track the pointer (hover highlight, edge scroll) */
             {
@@ -1013,16 +1117,24 @@ int main(void)
             }
             if (settings_take_changed()) {          /* theme picked in Settings */
                 setup_palette();                    /* new colors show instantly (8bpp palette) */
-                mark_rect(0, 0, GFX_LCD_WIDTH, MENU_H + 1);   /* clock / battery may have changed */
-                if (settings_take_font_changed()) {
-                    ui_text_apply();                /* text widths changed: repaint everything */
-                    dirty = true;
-                }
+                /* Full redraw: palette updates are live, but both framebuffers and any
+                 * non-palette pixels need a clean pass, and Settings' mark_all() is only
+                 * collected on hover/click otherwise. */
+                dirty = true;
+                if (settings_take_font_changed())
+                    ui_text_apply();                /* text widths changed */
             }
             if (hover != last_hover) dirty = true;
             last_hover = hover;
 
             render_frame(hover, dirty);
+            if (!booted) {
+                /* NEW: the first frame is on screen, so the start survived:
+                 * delete the crash guard now (mods.c), or the next start
+                 * blames every loaded mod and skips them all forever. */
+                mods_boot_ok();
+                booted = true;
+            }
             dirty = false;
         }
 
@@ -1032,3 +1144,63 @@ int main(void)
     end_graphics();
     return 0;
 }
+
+/* ---------- the shell's own stack ----------
+ * A Flash App starts on the OS stack, which the CE guards with a hard limit at $D19881 (a write
+ * there is an NMI reset: "stack overflow", RAM cleared). The OS has already used part of it by
+ * the time the app starts, so how much is left depends on how the app was launched, and a few
+ * hundred bytes are easily enough to hit it. The shell instead runs on a stack of its own,
+ * taken from the heap (the heap is far below the OS stack, and does not enlarge the app file
+ * the way a static array would). If the allocation fails it carries on with the OS stack.
+ * Build with -DSHELL_DEBUG_STACK to see how low the stack gets ("SP ......").
+ *
+ * NEW: the allocation is now also rejected when the 8 KB block would reach the
+ * app RAM / OS stack zone [0xD1787C, 0xD1A881) - the same overlap check
+ * mods.c applies to mod images - because a stack placed there pushes through
+ * $D19881 after only a few hundred bytes of use. And when the shell ends up on
+ * the OS stack anyway, mods are loaded + relocated but never given control
+ * (mods_set_entry_allowed(false)): their stack use is unknown, and the debug
+ * display shows "OSSTK" so the fallback is visible. */
+#ifdef SHELL_FLASH_APP
+#define SHELL_STACK_SIZE 8192
+static int shell_result;
+
+void shell_call_on_stack(void (*fn)(void), void *stack_top);   /* stack.s */
+
+static void shell_main_on_own_stack(void)
+{
+    shell_result = shell_main();
+}
+
+int main(void)
+{
+    uint8_t *stack = (uint8_t *)malloc(SHELL_STACK_SIZE);
+
+    if (stack && (uintptr_t)stack < 0xD1A881u &&
+        (uintptr_t)stack + SHELL_STACK_SIZE > 0xD1787Cu) {
+        free(stack);               /* would reach the OS stack guard zone (see mods.c) */
+        stack = NULL;
+    }
+    if (!stack) {
+        /* No safe stack of our own: run on the OS stack, but never let mod
+         * code run there. */
+        mods_set_entry_allowed(false);
+        return shell_main();
+    }
+    own_stack = true;
+    shell_call_on_stack(shell_main_on_own_stack, stack + SHELL_STACK_SIZE);
+    return shell_result;        /* the stack is left allocated: the app is about to exit */
+}
+#else
+int main(void)
+{
+    /* NEW: the program build has no custom stack at all - SP starts at
+     * 0xD1A87E on the OS stack, so the same hard limit at 0xD19881 applies.
+     * Mods are loaded + relocated but never given control in this build; to
+     * run them here too, switch to a malloc'd stack the way the Flash App
+     * build above does (link stack.s and keep one allocation across
+     * os_RunPrgm re-entries into main via return_to_shell). */
+    mods_set_entry_allowed(false);
+    return shell_main();
+}
+#endif

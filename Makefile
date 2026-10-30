@@ -13,6 +13,12 @@ BINDIR = bin
 CFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
 CXXFLAGS = -Wall -Wextra -Oz -DSHELL_FLASH_APP=1
 
+# make TRACE=1 builds the boot-trace version (stops after each startup stage, prints addresses)
+ifeq ($(TRACE),1)
+CFLAGS   += -DSHELL_BOOT_TRACE
+CXXFLAGS += -DSHELL_BOOT_TRACE
+endif
+
 APPVAR_PREFIX = atmOS
 APPVAR_SPLIT_SIZE = 65200
 CLIBS_VERSION = v15.0
@@ -39,9 +45,6 @@ installer:
 
 installer-clean:
 	$(Q)$(MAKE) -C installer clean
-
-clean:
-	$(Q)$(MAKE) -C clean
 
 package: appvars installer libraries
 

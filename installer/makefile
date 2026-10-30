@@ -6,7 +6,8 @@ NAME ?= ATMOS
 DESCRIPTION ?= "atmOS Flash App installer"
 ARCHIVED ?= NO
 
-APPVAR_SPLIT_SIZE ?= 0x7F00
+# Must match shell packaging (Makefile APPVAR_SPLIT_SIZE = 65200).
+APPVAR_SPLIT_SIZE ?= 65200
 
 CFLAGS   ?= -Wall -Wextra -O2
 CXXFLAGS ?= -Wall -Wextra -O2

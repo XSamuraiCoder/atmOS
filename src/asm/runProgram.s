@@ -112,6 +112,8 @@ main.debounce:
     ld a, (de)
     ld b, a
     pop af
+    cp a, 4
+    jp z, main.runAsmCall ; Z80-mode assembly: run through the OS as Asm(prgmNAME)
     or a, a
     jr z, main.runASM ; assembly program
     dec a
@@ -161,6 +163,57 @@ _asm_runProgram_main.ASMLoaded:
     ld hl, runProgram_return
     push hl
     jp ti.userMem
+
+; Z80-mode assembly (Asm84CPrgm / Asm84CCmp / AsmPrgm / AsmCmp) cannot run in eZ80 mode. Do what the
+; home screen does: run the BASIC line  Asm(prgmNAME)  and let the OS start the program.
+; The line is built as tokens in scratch RAM, copied into the temporary program, and run like a
+; BASIC program (so the return path cleans the temporary program up).
+; OP1 = type, program name (8 bytes, zero padded)
+main.runAsmCall:
+    ld hl, isASM
+    ld (hl), false
+    ld hl, ti.pixelShadow
+    ld (hl), $BB ; 2-byte token prefix
+    inc hl
+    ld (hl), $6A ; Asm(
+    inc hl
+    ld (hl), $5F ; prgm
+    inc hl
+    ld de, ti.OP1 + 1
+    ld b, 8
+main.asmCall.copyName:
+    ld a, (de)
+    or a, a
+    jr z, main.asmCall.nameDone
+    ld (hl), a
+    inc hl
+    inc de
+    djnz main.asmCall.copyName
+main.asmCall.nameDone:
+    ld (hl), $11 ; )
+    inc hl
+    ld de, ti.pixelShadow
+    or a, a
+    sbc hl, de ; hl = length of the line
+    push hl
+    ld de, 128
+    add hl, de
+    call ti.EnoughMem
+    pop hl
+    ld a, ti.E_Memory
+    jp c, _asm_runProgram_error
+    push hl
+    ld hl, _rodata_basicPrgmName
+    call ti.Mov9ToOP1
+    pop hl
+    push hl
+    call ti.CreateProtProg
+    inc de
+    inc de
+    pop bc
+    ld hl, ti.pixelShadow
+    ldir
+    jp main.loadComplete
 
 main.runBasic:
     ld hl, isASM

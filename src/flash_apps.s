@@ -2,7 +2,10 @@
 	.section .text
 	.include "src/asm/include/equates.inc"
 
-; TI OS internal Flash App search and launch path; OS-version-dependent.
+; TI OS Flash App search/launch. Use toolchain ti.* symbols (not raw addresses)
+; so the correct entry points for the linked OS headers are used — hardcoded
+; 0x210F4 / 0x21100 / 0x20108 only match one OS revision and NMI-reset CEmu
+; (or hardware) on any other.
 ; The return-to-shell bridge follows CEaShell's GPL-3.0 app restart behavior.
 	.extern	_asm_utils_clrScrnAndUsedRAM
 	.global _flash_apps_find_next
@@ -12,14 +15,14 @@
 	.global _flash_program_return_to_shell
 
 _flash_apps_find_next:
-	call	0x210F4
+	call	ti.FindAppUp
 	ld	a,0
 	ret	c
 	inc	a
 	ret
 
 _os_FindAppStart:
-	jp	0x21100
+	jp	ti.FindAppStart
 
 _flash_apps_find_app:
 	pop	de
@@ -41,10 +44,10 @@ _flash_program_return_to_shell:
 	jr	c,.L_shell_not_found
 	push	hl
 	call	_flash_apps_launch
-	jp	0x20108
+	jp	ti.JForceCmdNoChar
 
 .L_shell_not_found:
-	jp	0x20108
+	jp	ti.JForceCmdNoChar
 
 _flash_apps_launch:
 	pop	hl			; return address (unused)
@@ -131,7 +134,7 @@ _flash_apps_launch:
 	jp	(hl)
 
 .L_app_exit:			; FIX: leave to the OS home screen instead of RETing into garbage
-	jp	0x20108
+	jp	ti.JForceCmdNoChar
 
 	.section .rodata
 .L_shell_app_name:

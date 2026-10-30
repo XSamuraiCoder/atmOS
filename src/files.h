@@ -38,6 +38,7 @@ bool files_press(void);
 bool files_alpha(void);
 bool files_menu_active(void);
 bool files_cancel_menu(void);
+uint8_t files_program_kind(const char *name, uint8_t type);   /* how to run it: PROGRAM_* in program_kind.h */
 bool files_take_launch_request(const char **prgm, void **app_header,
                                uint8_t *program_kind, uint8_t *var_type);
 

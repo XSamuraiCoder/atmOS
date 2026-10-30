@@ -61,6 +61,10 @@ static const settings_theme_t themes[THEME_COUNT] = {
       { 244, 228, 232 }, { 240,  70, 120 } }                                    /* Candy */
 };
 
+/* ---------- runtime themes (registered by mods; see settings.h) ---------- */
+static struct { char name[16]; settings_theme_t t; } mod_themes[SETTINGS_MOD_THEME_MAX];
+static uint8_t mod_theme_count;
+
 #define WALL_COUNT 3
 static const char *const wall_names[WALL_COUNT] = { "Gradient", "Flat", "Reverse" };
 
@@ -93,7 +97,7 @@ static const char *const font_names[FONT_BUILTIN] = { "Default" };
 
 /* ---------- state ---------- */
 typedef struct {
-    uint8_t theme;      /* index into themes[] */
+    uint8_t theme;      /* index into built-ins + registered mod themes (see settings_theme_lookup) */
     uint8_t wall;       /* 0 gradient, 1 flat, 2 reverse */
     uint8_t accent;     /* 0 = theme, else accents[accent - 1] */
     uint8_t font;       /* FONT_*, or FONT_CUSTOM */
@@ -114,6 +118,43 @@ static settings_theme_t eff;            /* preset + overrides; what the shell dr
 static bool changed;                    /* a setting changed; main.c re-applies the palette */
 static bool font_changed;               /* ...and the font changed too */
 static bool archive_pending;
+
+/* ---------- runtime theme registry (indices continue after the built-ins) ---------- */
+int settings_theme_count(void)
+{
+    return THEME_COUNT + mod_theme_count;
+}
+
+const char *settings_theme_name(int index)
+{
+    if (index < 0 || index >= settings_theme_count()) return "?";
+    return index < THEME_COUNT ? theme_names[index]
+                               : mod_themes[index - THEME_COUNT].name;
+}
+
+const settings_theme_t *settings_theme_lookup(int index)
+{
+    if (index < 0 || index >= settings_theme_count()) return &themes[0];
+    return index < THEME_COUNT ? &themes[index]
+                               : &mod_themes[index - THEME_COUNT].t;
+}
+
+int settings_register_theme(const char *name, const settings_theme_t *theme)
+{
+    int i;
+
+    if (!name || !name[0] || !theme) return -1;
+    for (i = 0; i < mod_theme_count; i++)             /* registering twice returns the same index */
+        if (strcmp(mod_themes[i].name, name) == 0)
+            return THEME_COUNT + i;
+    if (mod_theme_count >= SETTINGS_MOD_THEME_MAX || strlen(name) >= sizeof(mod_themes[0].name))
+        return -1;
+
+    strcpy(mod_themes[mod_theme_count].name, name);
+    mod_themes[mod_theme_count].t = *theme;
+    changed = true;                       /* the active theme may now resolve differently */
+    return THEME_COUNT + mod_theme_count++;
+}
 
 /* ---------- widgets ---------- */
 enum {
@@ -202,7 +243,7 @@ static void rebuild_theme(void)
 {
     settings_rgb_t t;
 
-    eff = themes[prefs.theme < THEME_COUNT ? prefs.theme : 0];
+    eff = *settings_theme_lookup(prefs.theme);
     if (prefs.wall == 1) {
         eff.bottom = eff.top;                           /* flat */
     } else if (prefs.wall == 2) {
@@ -320,7 +361,7 @@ static int find_custom(const char *var, uint8_t index)
 /* ---------- storage ---------- */
 static bool sane(const uint8_t *b)       /* b[1..10] = the ten settings */
 {
-    return b[1] < THEME_COUNT && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
+    return b[1] < THEME_COUNT + SETTINGS_MOD_THEME_MAX && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
            b[4] <= FONT_CUSTOM && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
@@ -446,7 +487,7 @@ bool settings_custom_font(char var_name[9], uint8_t *font_index)
 static int drop_count(int id)
 {
     switch (id) {
-    case W_THEME:  return THEME_COUNT;
+    case W_THEME:  return settings_theme_count();
     case W_WALL:   return WALL_COUNT;
     case W_ACCENT: return ACCENT_COUNT + 1;
     case W_FONT:   return FONT_BUILTIN + custom_count;
@@ -457,7 +498,7 @@ static int drop_count(int id)
 static const char *drop_item(int id, int i)
 {
     switch (id) {
-    case W_THEME:  return theme_names[i];
+    case W_THEME:  return settings_theme_name(i);
     case W_WALL:   return wall_names[i];
     case W_FONT:   return i < FONT_BUILTIN ? font_names[i] : custom[i - FONT_BUILTIN].label;
     case W_ACCENT: return i == 0 ? "Theme" : accents[i - 1].name;
@@ -918,6 +959,25 @@ static void apply(const prefs_t *next)
     }
     changed = true;
     store_prefs();
+}
+
+/* ---------- live theme switching (mod API: apply_theme) ----------
+ * Switch the active theme without a restart. The wallpaper / accent / bar / dock
+ * overrides are cleared so the preset shows through; apply() flags the change, so
+ * main.c re-applies the palette and repaints on the very same frame. */
+bool settings_select_theme(int index)
+{
+    prefs_t next = prefs;
+
+    if (index < 0 || index >= settings_theme_count())
+        return false;
+    next.theme = (uint8_t)index;
+    next.wall = 0;                     /* follow the theme */
+    next.accent = 0;
+    next.bar = 0;
+    next.dock = 0;
+    apply(&next);
+    return true;
 }
 
 bool settings_cancel(void)

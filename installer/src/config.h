@@ -9,9 +9,10 @@
  * limit on the calculator: prefix + digits must fit. */
 #define APPVAR_PREFIX "atmOS"
 
-/* Bytes per AppVar, except the last one. Must match the packaging tool. */
+/* Bytes per AppVar, except the last one. Must match the shell Makefile /
+ * convbin -m value (65200). Wrong size → only atmOS0 is installed. */
 #ifndef APPVAR_SPLIT_SIZE
-#define APPVAR_SPLIT_SIZE 0x7F00
+#define APPVAR_SPLIT_SIZE 65200
 #endif
 
 /* The app's name (as it appears in APPS) is read from the first AppVar at

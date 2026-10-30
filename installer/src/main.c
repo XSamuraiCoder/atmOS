@@ -395,6 +395,13 @@ static bool check_variable_overlaps(const uint8_t *app_start)
     return true;
 }
 
+static bool appvar_exists(uint8_t i)
+{
+    char name[10];
+    sprintf(name, APPVAR_PREFIX "%u", i);
+    return os_ChkFindSym(OS_TYPE_APPVAR, name, NULL, NULL);
+}
+
 static int do_install(void)
 {
     uint24_t app_size = 0;
@@ -416,7 +423,10 @@ static int do_install(void)
                 app_name[sizeof(app_name) - 1] = 0;
             }
             app_size += appvar->size;
-            if (appvar->size != APPVAR_SPLIT_SIZE) break;
+            /* The last chunk is the short one, or the one with no successor. The size can
+             * be a few bytes off the -m split value (65215 vs 65200), so a chunk within
+             * 50 bytes of it still counts as a full one. */
+            if (appvar->size + 50 < APPVAR_SPLIT_SIZE || !appvar_exists(i + 1)) break;
             appvar++;
         } else {
             return MISSING_VAR;

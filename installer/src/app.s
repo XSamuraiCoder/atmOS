@@ -1,4 +1,4 @@
-; app.asm - installer support routines (eZ80, ADL)
+; app.s - installer support routines (eZ80, ADL)
 	;
 	;   os_FindAppStart   - OS jump-table wrapper (address depends on the OS version;
 	;                       port_setup must have accepted the OS)
@@ -10,10 +10,9 @@
 	.assume	adl=1
 	.section	.text
 
-	; The app's data-section base address: relocation table entries at or above
-	; 0x800000 are data-relative and biased by this base. MUST match the value the
-	; app was packaged with (the app build's linker script / data base).
-	.equ	APP_DATA_BASE, 0x0D0000
+	; Data-section base for CE toolchain Flash Apps. Official app_tools uses
+	; $d1787c (not 0x0D0000). Wrong base → broken data relocs → reset on launch.
+	.equ	APP_DATA_BASE, 0xD1787C
 
 	.global	_os_FindAppStart
 	.equ	_os_FindAppStart, 0x21100
