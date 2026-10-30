@@ -118,6 +118,7 @@ static settings_theme_t eff;            /* preset + overrides; what the shell dr
 static bool changed;                    /* a setting changed; main.c re-applies the palette */
 static bool font_changed;               /* ...and the font changed too */
 static bool archive_pending;
+static bool store_pending;          /* prefs changed: write SHLSET in settings_flush() */
 
 /* ---------- runtime theme registry (indices continue after the built-ins) ---------- */
 int settings_theme_count(void)
@@ -139,9 +140,11 @@ const settings_theme_t *settings_theme_lookup(int index)
                                : &mod_themes[index - THEME_COUNT].t;
 }
 
+static void rebuild_theme(void);          /* forward: defined below the widgets */
+
 int settings_register_theme(const char *name, const settings_theme_t *theme)
 {
-    int i;
+    int i, index;
 
     if (!name || !name[0] || !theme) return -1;
     for (i = 0; i < mod_theme_count; i++)             /* registering twice returns the same index */
@@ -150,10 +153,14 @@ int settings_register_theme(const char *name, const settings_theme_t *theme)
     if (mod_theme_count >= SETTINGS_MOD_THEME_MAX || strlen(name) >= sizeof(mod_themes[0].name))
         return -1;
 
+    index = THEME_COUNT + mod_theme_count;
     strcpy(mod_themes[mod_theme_count].name, name);
     mod_themes[mod_theme_count].t = *theme;
+    mod_theme_count++;                     /* count BEFORE rebuild_theme: the lookup (and a saved
+                                              prefs.theme) must already see this new entry */
+    rebuild_theme();                      /* a saved prefs.theme may now point at this theme */
     changed = true;                       /* the active theme may now resolve differently */
-    return THEME_COUNT + mod_theme_count++;
+    return index;
 }
 
 /* ---------- widgets ---------- */
@@ -400,7 +407,15 @@ static void load_prefs(void)
     rebuild_theme();
 }
 
+/* A settings change only marks the prefs dirty. The AppVar is written in settings_flush(), when
+ * the shell is left, so no file / OS memory work runs inside a click handler (which a mod can be
+ * the caller of) and nothing touches flash while the shell is on its own stack. */
 static void store_prefs(void)
+{
+    store_pending = true;
+}
+
+static void write_prefs(void)
 {
     uint8_t buf[STORE_SIZE];
     uint8_t h;
@@ -436,6 +451,10 @@ void settings_init(void)
 void settings_flush(void)
 {
     uint8_t h;
+    if (store_pending) {
+        write_prefs();                  /* sets archive_pending */
+        store_pending = false;
+    }
     if (!archive_pending) return;
     h = ti_Open(STORE_NAME, "r");
     if (h) { ti_SetArchiveStatus(true, h); ti_Close(h); }

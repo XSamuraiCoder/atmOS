@@ -167,12 +167,24 @@ static void begin_graphics(void)
 
 /* gfx_End switches the LCD to 16bpp while VRAM still holds 8bpp indices,
  * which flashes purple noise. Zero VRAM (black in 16bpp) first. */
+/* SHLSET / SHNOTES are NOT written here anymore. File and flash work must never run
+ * while the shell is on its own malloc'd stack (the invariant in settings.c's
+ * store_prefs): flushing inside end_graphics() reset the calculator at exit
+ * whenever a settings change was still pending - e.g. a mod theme picked in
+ * Settings (or applied by a mod) wrote and archived SHLSET from the shell stack.
+ * shell_flush() now runs in main(), after the shell has returned to the OS stack. */
 static void end_graphics(void)
 {
-    notes_flush();
-    settings_flush();
     memset(gfx_vram, 0, GFX_LCD_WIDTH * GFX_LCD_HEIGHT * 2);
     gfx_End();
+}
+
+/* Write + archive the stored settings. Call only on the OS stack: after
+ * shell_main() has returned (both builds below), never from inside it. */
+static void shell_flush(void)
+{
+    notes_flush();          /* write + archive SHNOTES */
+    settings_flush();       /* write + archive SHLSET */
 }
 
 static void fill_round_rect(int x, int y, int w, int h, int r)
@@ -1183,17 +1195,24 @@ int main(void)
     }
     if (!stack) {
         /* No safe stack of our own: run on the OS stack, but never let mod
-         * code run there. */
+         * code run there. The flush below is safe here too: no own stack. */
+        int result;
+
         mods_set_entry_allowed(false);
-        return shell_main();
+        result = shell_main();
+        shell_flush();
+        return result;
     }
     own_stack = true;
     shell_call_on_stack(shell_main_on_own_stack, stack + SHELL_STACK_SIZE);
+    shell_flush();              /* back on the OS stack: files + flash are safe to touch now */
     return shell_result;        /* the stack is left allocated: the app is about to exit */
 }
 #else
 int main(void)
 {
+    int result;
+
     /* NEW: the program build has no custom stack at all - SP starts at
      * 0xD1A87E on the OS stack, so the same hard limit at 0xD19881 applies.
      * Mods are loaded + relocated but never given control in this build; to
@@ -1201,6 +1220,8 @@ int main(void)
      * build above does (link stack.s and keep one allocation across
      * os_RunPrgm re-entries into main via return_to_shell). */
     mods_set_entry_allowed(false);
-    return shell_main();
+    result = shell_main();
+    shell_flush();              /* OS stack here: writing + archiving is safe */
+    return result;
 }
 #endif

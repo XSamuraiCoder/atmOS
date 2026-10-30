@@ -19,6 +19,13 @@ CFLAGS   += -DSHELL_BOOT_TRACE
 CXXFLAGS += -DSHELL_BOOT_TRACE
 endif
 
+# make DEBUG_STACK=1 builds the stack-debug version (draws the SP low-water mark in
+# the top bar; "OSSTK" additionally means the shell fell back to the OS stack)
+ifeq ($(DEBUG_STACK),1)
+CFLAGS   += -DSHELL_DEBUG_STACK
+CXXFLAGS += -DSHELL_DEBUG_STACK
+endif
+
 APPVAR_PREFIX = atmOS
 APPVAR_SPLIT_SIZE = 65200
 CLIBS_VERSION = v15.0
