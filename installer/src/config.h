@@ -23,6 +23,12 @@
 /* The SHLSET layout and the setting choices are copied from the shell's settings.c
  * into main.c. If you change them in the shell (new theme, wallpaper, tint, accent,
  * STORE_VERSION / STORE_SIZE), change them there too. Font packs are found the same
- * way the shell does: every AppVar whose name starts with "FONTPACK". */
+ * way the shell does: every AppVar whose name starts with "FONTPACK".
+ *
+ * Mod themes: the installer loads every mod AppVar ("atmOS mod: " signature) and runs its
+ * mod_main against a capture-only API to collect register_theme calls. Keep these equal to
+ * the shell: MOD_THEME_MAX = SETTINGS_MOD_THEME_MAX (settings.h), MODS_MAX_FOUND and
+ * MODS_MAX_MEM (mods.h), the 16-byte theme name limit (settings.c), and copy atmos_mod.h
+ * from the shell unchanged into the installer's src folder. */
 
 #endif
