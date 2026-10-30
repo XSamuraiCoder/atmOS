@@ -1,4 +1,3 @@
-
 name: Build atmOS
 
 on:
@@ -28,6 +27,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Check out the Halloween theme mod
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/halloween-theme
+          path: halloween-theme
+
       - name: Cache the toolchain
         id: cedev-cache
         uses: actions/cache@v4
@@ -53,7 +58,6 @@ jobs:
           echo "$HOME/CEdev/bin" >> "$GITHUB_PATH"
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
-      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -66,7 +70,7 @@ jobs:
           cefont --help
 
       - name: Remove stale build output
-        run: rm -rf obj bin installer/obj installer/bin
+        run: rm -rf obj bin installer/obj installer/bin halloween-theme/obj halloween-theme/bin
 
       - name: Normalize line endings
         run: |
@@ -128,7 +132,7 @@ jobs:
 
           cefont build fonts/sans-serif.ttf --name SANSERIF --size 12
           cefont build fonts/fredoka.ttf --name FREDOKA --size 12
-          cefont build fonts/benchmark.ttf --name BENCHMAR --size 12
+          cefont build fonts/benchmark.ttf --name BENCHMAR --size 16
           cefont build fonts/bungee.ttf --name BUNGEE --size 12
 
           for name in SANSERIF FREDOKA BENCHMAR BUNGEE; do
@@ -148,13 +152,30 @@ jobs:
       - name: Build app, installer, and libraries
         run: make package
 
+      - name: Build the Halloween theme mod
+        run: |
+          make -C halloween-theme
+
+          file="$(find halloween-theme -type f -iname 'SPOOKY.8xv' -print -quit)"
+
+          if [ -z "$file" ]; then
+            echo "Missing built mod AppVar: SPOOKY.8xv" >&2
+            exit 1
+          fi
+
+          mkdir -p "dist/Halloween Theme"
+          cp "$file" "dist/Halloween Theme/SPOOKY.8xv"
+
+          ls -lh "dist/Halloween Theme/"
+
       - name: Collect build outputs
         run: |
           cp bin/atmOS.*.8xv dist/
-          cp bin/INSTALL.8xp bin/clibs.8xg readme.txt dist/
+          cp bin/ATMOS.8xp bin/clibs.8xg readme.txt dist/
 
           ls -lh dist/
           ls -lh "dist/extra fonts/"
+          ls -lh "dist/Halloween Theme/"
 
       - name: Create ZIP
         run: |
