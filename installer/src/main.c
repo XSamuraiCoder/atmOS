@@ -677,13 +677,19 @@ static int do_install(void)
             }
             app_size += appvar->size;
             /* The last chunk is the short one, or the one with no successor. The size can
-             * be a few bytes off the -m split value (65215 vs 65200), so a chunk within
+             * be a few bytes off the -m split value (e.g. 61455 vs 61440), so a chunk within
              * 50 bytes of it still counts as a full one. */
             if (appvar->size + 50 < APPVAR_SPLIT_SIZE || !appvar_exists(i + 1)) break;
             appvar++;
         } else {
             return MISSING_VAR;
         }
+    }
+    /* More chunks than MAX_APPVARS: refuse rather than write a truncated image. */
+    {
+        char name[10];
+        sprintf(name, APPVAR_PREFIX "%u", MAX_APPVARS);
+        if (os_ChkFindSym(OS_TYPE_APPVAR, name, NULL, NULL)) return MISSING_VAR;
     }
     /* An installed copy of the app is never removed by this installer; writing a
      * second one after it would leave a stale duplicate. Stop and tell the user.

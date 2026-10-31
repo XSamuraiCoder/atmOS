@@ -7,10 +7,10 @@
 /* The app image arrives split into numbered AppVars: "ATMOS0", "ATMOS1", ... The
  * last AppVar is short (its size differs from APPVAR_SPLIT_SIZE). 8-character name
  * limit on the calculator: prefix + digits must fit. */
-#define APPVAR_PREFIX "atmOS"
+#define APPVAR_PREFIX "ATMOS"
 
 /* Bytes per AppVar, except the last one. Must match the shell Makefile /
- * convbin -m value (65200). Wrong size → only atmOS0 is installed. */
+ * convbin -m value (61440). Wrong size → only atmOS0 is installed. */
 #ifndef APPVAR_SPLIT_SIZE
 #define APPVAR_SPLIT_SIZE 65200
 #endif
