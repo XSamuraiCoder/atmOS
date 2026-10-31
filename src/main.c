@@ -366,6 +366,14 @@ extern void asm_runProgram_run(const char *name, uint8_t var_type,
 /* BSS-zeroed. The runner may read this on return-to-shell; zeros are safe
  * defaults until a real SHLSET pack is written here. */
 static uint8_t program_runner_preferences[20];
+/* NEW: osLaunch.s hook state (src/asm/osLaunch.s). App RAM survives program
+ * runs and is zeroed at every app start, which resets the return-to-OS
+ * flag to the safe default (return to the shell). Keep these non-static:
+ * the asm hook externs them as _os_launch_*. */
+uint8_t os_launch_flags;              /* bit 0 = Asm( used, 1 = archived, 2 = native */
+uint8_t os_launch_kind;               /* program_kind.h value for _asm_runProgram_main */
+uint8_t os_launch_return_os_flag;     /* 1 = return to the OS homescreen after the run */
+extern void asm_oslaunch_install(void);
 #else
 static void run_program(const char *name);
 #endif
@@ -1186,6 +1194,8 @@ static void shell_main_on_own_stack(void)
 
 int main(void)
 {
+    asm_oslaunch_install();      /* NEW: first line - OS menu EXEC / prgmPRGM / */
+                                 /* NEW: Asm(prgmPRGM) launches run via osLaunch.s */
     uint8_t *stack = (uint8_t *)malloc(SHELL_STACK_SIZE);
 
     if (stack && (uintptr_t)stack < 0xD1A881u &&

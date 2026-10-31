@@ -2,6 +2,13 @@
 # Makefile for the TI-84 CE shell (atmOS)
 # ----------------------------
 
+# NEW: src/asm/osLaunch.s (OS-side launch hook) needs no entry here. The
+# toolchain makefile included below compiles every .s file it finds under
+# src/ recursively, so simply keeping the file in src/asm/ adds it to this
+# Flash App build automatically. It externs _flash_program_return_to_shell,
+# so never build it into a non-Flash-App target that shares this src/ tree
+# (a separate program build would have to exclude it).
+
 .DEFAULT_GOAL := all
 
 NAME = atmOS
