@@ -55,7 +55,7 @@ $(CLIBS_FILE):
 	$(Q)curl -fL "https://github.com/CE-Programming/libraries/releases/download/$(CLIBS_VERSION)/clibs.8xg" -o "$(call NATIVEPATH,$@)" || curl -fL "https://github.com/CE-Programming/libraries/releases/latest/download/clibs.8xg" -o "$(call NATIVEPATH,$@)"
 
 installer:
-	$(Q)$(MAKE) -B -C installer APPVAR_PREFIX=$(APPVAR_PREFIX) APPVAR_SPLIT_SIZE=$(APPVAR_SPLIT_SIZE) BINDIR=../$(BINDIR)
+	$(Q)$(MAKE) -B -C installer NAME=ATMOS APPVAR_PREFIX=$(APPVAR_PREFIX) APPVAR_SPLIT_SIZE=$(APPVAR_SPLIT_SIZE) BINDIR=../$(BINDIR)
 
 installer-clean:
 	$(Q)$(MAKE) -C installer clean

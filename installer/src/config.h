@@ -21,8 +21,8 @@
 #define APP_NAME_OFFSET (256 + 3)
 
 /* The SHLSET layout and the setting choices are copied from the shell's settings.c
- * into main.c. If you change them in the shell (new theme, wallpaper, tint, accent,
- * STORE_VERSION / STORE_SIZE), change them there too. Font packs are found the same
+ * into main.c. Keep STORE_VERSION / STORE_SIZE and the settings layout in sync
+ * with the shell. Font packs are found the same
  * way the shell does: every AppVar whose name starts with "FONTPACK".
  *
  * Mod themes: the installer loads every mod AppVar ("atmOS mod: " signature) and runs its

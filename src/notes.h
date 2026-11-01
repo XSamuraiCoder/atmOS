@@ -5,12 +5,15 @@
 #include <stdint.h>
 
 /* Built-in Notes app. Same hook shape as the Files app in the app_t table. */
+bool notes_alloc(void);                     /* heap table: call once at startup; false = no memory */
 void notes_open(void);                      /* call when the window opens */
 void notes_draw(int x, int y);
 void notes_click(int x, int y);
 bool notes_hover(int x, int y);
 bool notes_keys(void);                      /* arrows / typing; true = used */
 bool notes_press(void);                     /* Enter / 2nd; true = handled */
+bool notes_focus_keys(void);
+bool notes_focus_press(void);
 bool notes_cancel(void);                    /* Clear; true = handled (back to list) */
 void notes_flush(void);                     /* save + archive; call before leaving the shell */
 

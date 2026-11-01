@@ -34,6 +34,7 @@ uint8_t settings_pointer_speed(void);           /* 0 = slow, 1 = normal, 2 = fas
 bool settings_clock_24h(void);                  /* false = 12-hour with AM/PM */
 bool settings_show_battery(void);                /* menu bar battery indicator */
 bool settings_dock_labels(void);                /* tooltip with the app name over the dock */
+bool settings_keyboard_focus(void);             /* navigate controls without moving the pointer */
 bool settings_take_changed(void);               /* true once after a change: re-apply the palette */
 bool settings_take_font_changed(void);          /* true once after the font changed: redraw everything */
 
@@ -53,8 +54,10 @@ bool settings_hover(int x, int y);
 /* Screen rectangles (x0, y0, x1, y1; x1/y1 exclusive) that changed since the last call, so the
  * shell repaints only those. Returns the count, or -1 when the whole window should be repainted. */
 int settings_dirty(int x, int y, int r[][4], int max);
-bool settings_keys(void);                       /* always false: arrows move the pointer */
-bool settings_press(void);                      /* always false: Enter clicks */
+bool settings_keys(void);                       /* pointer-mode key handling */
+bool settings_press(void);                      /* pointer-mode activation */
+bool settings_focus_keys(void);
+bool settings_focus_press(void);
 bool settings_cancel(void);                     /* Clear: closes an open dropdown; true = handled */
 void settings_flush(void);                      /* archive the AppVar; call before leaving the shell */
 

@@ -3,7 +3,9 @@ atmOS - a pointer-driven shell for the TI-84 Plus CE
 
 atmOS gives your calculator a desktop-style home screen: a menu bar on
 top, a dock at the bottom, and windows for Files, Notes and Settings.
-You move a pointer around with the arrow keys and click with Enter.
+Use the arrow keys to move the pointer and Enter to click. In Settings >
+System, Keyboard focus enables pointer-independent keyboard navigation of
+the dock and built-in app controls.
 
 It runs as a Flash App, so it lives in the Apps menu.
 
@@ -23,7 +25,7 @@ Download atmOS.zip and unzip it. Inside you will find:
 
   clibs.8xg       The CE C libraries that atmOS needs.
   atmOS...8xv     The app itself. There may be more than one of these.
-  INSTALL.8xp     The installer program.
+  ATMOS.8xp       The installer program.
 
 
 HOW TO INSTALL
@@ -34,7 +36,7 @@ HOW TO INSTALL
  2. Send ALL the atmOS .8xv files.
     Send every one of them, or the install will fail.
 
- 3. Send INSTALL.8xp.
+ 3. Send ATMOS.8xp.
 
  4. On the calculator, run your jailbreak, choose INSTALL from the menu or the [prgm] menu, and press [enter].
     (On an older OS, if it shows an error, run it as Asm(prgmINSTALL)
@@ -54,8 +56,8 @@ HOW TO USE IT
 -------------
 Keys:
 
-  Arrow keys      Move the pointer.
-  [enter]/[2nd]   Click.
+  Arrow keys      Move the pointer, or move keyboard focus when enabled.
+  [enter]/[2nd]   Click, or activate keyboard focus when enabled.
   [clear]         Go back / close the window / close a menu.
                   With nothing open, it exits atmOS.
   [alpha]         In Files: open the pin menu for the item under the
@@ -75,6 +77,7 @@ Built-in apps:
   Files
     Browse your Programs, AppVars and Apps as big tiles.
     Click a tile to select it. Click a program again to run it.
+    With Keyboard focus on, use arrows to focus a tile and Enter to run it.
     Move the pointer off the left or right edge to flip pages.
     Pin a program or app to the dock: point at it, press [alpha],
     choose "Pin to taskbar". Use the same menu to unpin it.
@@ -94,15 +97,24 @@ Built-in apps:
       Look      Theme, wallpaper, accent color, font.
       Taskbar   Menu bar color, dock color, battery indicator,
                 dock labels.
-      System    Pointer speed, 12/24-hour clock, reset all settings.
+      System    Pointer speed, 12/24-hour clock, keyboard focus navigation,
+                reset all settings.
+                Turn Keyboard focus on to navigate without moving the
+                pointer. Use the arrows to change focus and Enter/2nd to
+                activate the focused item. Turn it off for pointer controls.
     Click a dropdown to open it, then click a choice. While a
     dropdown is open the pointer stays inside it. [clear] closes it.
     Changes apply right away and are saved when you leave atmOS.
 
 UPDATING
 --------
-Send the new files and run INSTALL again. Your settings, notes and
-pinned items are kept.
+Send the new atmOS .8xv files and ATMOS.8xp. Before running the
+installer, delete the existing atmOS app in Mem Mgmt/Del > Apps.
+The installer will not overwrite an installed copy.
+
+Do not delete SHLSET, SHNOTES, or SHLPINS if you want to keep your
+settings, notes, and pinned items. Run ATMOS after removing the old
+app to install the new version.
 
 
 UNINSTALLING
@@ -117,7 +129,7 @@ you want everything gone:  SHLSET (settings).
 IF SOMETHING GOES WRONG
 -----------------------
   - Installer error: check that you sent ALL the .8xv files and
-    clibs.8xg, then run INSTALL again.
+    clibs.8xg, then run ATMOS again.
   - Not enough memory: archive or delete things you do not need and
     try again.
   - Strange look after changing the font: open Settings and pick

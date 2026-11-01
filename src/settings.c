@@ -34,10 +34,11 @@ enum {
 #define CONTENT_H   180
 
 #define STORE_NAME     "SHLSET"
-#define STORE_VERSION  3
-#define STORE_SIZE     21   /* version, theme, wall, accent, font, bar, dock, speed, clock24, battery, tips,
+#define STORE_VERSION  4
+#define STORE_SIZE     22   /* version, theme, wall, accent, font, bar, dock, speed, clock24, battery, tips,
                          * custom font AppVar name (9), custom font index */
 #define STORE_SIZE_V2  11
+#define STORE_SIZE_V3  21
 
 /* ---------- choices ---------- */
 #define THEME_COUNT 6
@@ -107,13 +108,14 @@ typedef struct {
     uint8_t clock24;    /* 1 = 24-hour, 0 = 12-hour */
     uint8_t battery;    /* 1 = show */
     uint8_t tips;       /* 1 = dock labels */
+    uint8_t focus;      /* 1 = arrows navigate controls without moving the pointer */
     char    cvar[9];    /* custom font: font pack AppVar name */
     uint8_t cidx;       /* custom font: index inside the pack */
 } prefs_t;
 
-static const prefs_t defaults = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, { 0 }, 0 };
+static const prefs_t defaults = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, { 0 }, 0 };
 
-static prefs_t prefs = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, { 0 }, 0 };
+static prefs_t prefs = { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, { 0 }, 0 };
 static settings_theme_t eff;            /* preset + overrides; what the shell draws with */
 static bool changed;                    /* a setting changed; main.c re-applies the palette */
 static bool font_changed;               /* ...and the font changed too */
@@ -169,7 +171,8 @@ enum {
     W_THEME, W_WALL, W_ACCENT, W_FONT,              /* Look */
     W_BAR, W_DOCK,                                  /* Taskbar dropdowns */
     W_BATT_ON, W_BATT_OFF, W_TIPS_ON, W_TIPS_OFF,   /* Taskbar buttons */
-    W_SPEED0, W_SPEED1, W_SPEED2, W_CLK24, W_CLK12, W_RESET,   /* System */
+    W_SPEED0, W_SPEED1, W_SPEED2, W_CLK24, W_CLK12, W_RESET,
+    W_FOCUS_ON, W_FOCUS_OFF,                               /* System */
     W_COUNT
 };
 #define TAB_ALL (-1)
@@ -187,7 +190,7 @@ static const widget_t wd[W_COUNT] = {
     { 1, 156, 83,  69, 18 }, { 1, 229, 83,  69, 18 },
     { 2,   6, 41,  94, 20 }, { 2, 105, 41,  94, 20 }, { 2, 204, 41,  94, 20 },
     { 2,   6, 83, 142, 20 }, { 2, 156, 83, 142, 20 },
-    { 2,   6, 125, 142, 20 }
+    { 2,   6, 125, 142, 20 }, { 2, 156, 125, 69, 20 }, { 2, 229, 125, 69, 20 }
 };
 
 static const struct { int8_t tab; int16_t x, y; const char *s; } labels[] = {
@@ -196,7 +199,7 @@ static const struct { int8_t tab; int16_t x, y; const char *s; } labels[] = {
     { 1,   6, 30, "Menu bar color" }, { 1, 156, 30, "Dock color" },
     { 1,   6, 72, "Battery indicator" }, { 1, 156, 72, "Dock labels" },
     { 2,   6, 30, "Pointer speed" },  { 2,   6, 72, "Clock" },
-    { 2,   6, 114, "Reset" },         { 2, 156, 114, "About" }
+    { 2,   6, 114, "Reset" },         { 2, 156, 114, "Keyboard focus" }
 };
 
 static int tab;                         /* current tab */
@@ -204,6 +207,7 @@ static int hover = -1;                  /* widget under the pointer */
 static int open_drop = -1;              /* dropdown whose list is open */
 static int open_hover = -1;             /* list item under the pointer */
 static int drop_scroll = 0;             /* first visible row of a long open list */
+static uint16_t focus_prev_keys;
 
 /* Dropdown rows grow with the active font so a tall custom font never
  * overlaps the row above/below (ui_print centers glyphs on an 8px line). */
@@ -382,16 +386,19 @@ static void load_prefs(void)
     prefs = defaults;
     if (h) {
         n = ti_Read(buf, 1, STORE_SIZE, h);
-        if (n >= STORE_SIZE_V2 && (buf[0] == 2 || buf[0] == STORE_VERSION) && sane(buf)) {
+        if (n >= STORE_SIZE_V2 &&
+            (buf[0] == 2 || buf[0] == 3 || buf[0] == STORE_VERSION) && sane(buf)) {
             prefs.theme = buf[1];  prefs.wall = buf[2];  prefs.accent = buf[3];
             prefs.font = buf[4];   prefs.bar = buf[5];   prefs.dock = buf[6];
             prefs.speed = buf[7];  prefs.clock24 = buf[8];
             prefs.battery = buf[9]; prefs.tips = buf[10];
-            if (buf[0] == STORE_VERSION && n == STORE_SIZE) {
+            if (buf[0] >= 3 && n >= STORE_SIZE_V3) {
                 memcpy(prefs.cvar, buf + 11, 8);
                 prefs.cvar[8] = 0;
                 prefs.cidx = buf[20];
             }
+            if (buf[0] == STORE_VERSION && n == STORE_SIZE && buf[21] < 2)
+                prefs.focus = buf[21];
         } else if (n >= 4 && buf[0] == 1 &&              /* old format: theme, speed, clock */
                    buf[1] < THEME_COUNT && buf[2] < 3 && buf[3] < 2) {
             prefs.theme = buf[1];
@@ -428,6 +435,7 @@ static void write_prefs(void)
     memcpy(buf + 11, prefs.cvar, 8);
     buf[19] = 0;
     buf[20] = prefs.cidx;
+    buf[21] = prefs.focus;
 
     h = ti_Open(STORE_NAME, "w");
     if (!h) return;
@@ -467,6 +475,7 @@ uint8_t settings_pointer_speed(void)           { return prefs.speed < 3 ? prefs.
 bool settings_clock_24h(void)                  { return prefs.clock24 != 0; }
 bool settings_show_battery(void)               { return prefs.battery != 0; }
 bool settings_dock_labels(void)                { return prefs.tips != 0; }
+bool settings_keyboard_focus(void)             { return prefs.focus != 0; }
 
 bool settings_take_changed(void)
 {
@@ -572,7 +581,8 @@ static const char *btn_label(int id)
     static const char *const names[W_COUNT] = {
         "Look", "Taskbar", "System", 0, 0, 0, 0, 0, 0,
         "Show", "Hide", "On", "Off",
-        "Slow", "Normal", "Fast", "24-hour", "12-hour", "Reset all"
+        "Slow", "Normal", "Fast", "24-hour", "12-hour", "Reset all",
+        "On", "Off"
     };
     return names[id];
 }
@@ -585,6 +595,8 @@ static bool btn_sel(const prefs_t *p, int id)
     case W_BATT_OFF: return p->battery == 0;
     case W_TIPS_ON:  return p->tips != 0;
     case W_TIPS_OFF: return p->tips == 0;
+    case W_FOCUS_ON: return p->focus != 0;
+    case W_FOCUS_OFF: return p->focus == 0;
     case W_SPEED0: case W_SPEED1: case W_SPEED2: return p->speed == id - W_SPEED0;
     case W_CLK24: return p->clock24 != 0;
     case W_CLK12: return p->clock24 == 0;
@@ -706,6 +718,7 @@ static void draw_button(int x, int y, int id)
     const char *s = btn_label(id);
     bool sel = btn_sel(&prefs, id);
     bool hov = id == hover;
+    bool focus = settings_keyboard_focus() && hov;
     uint8_t bg, fg;
 
     if (id == W_RESET) {
@@ -719,8 +732,13 @@ static void draw_button(int x, int y, int id)
         fg = PAL_TEXT;
     }
 
+    if (focus) {
+        gfx_SetColor(PAL_ACCENT);
+        fill_rr(x + r->x - 2, y + r->y - 2, r->w + 4, r->h + 4, 8);
+    }
     gfx_SetColor(bg);
-    fill_rr(x + r->x, y + r->y, r->w, r->h, 6);
+    fill_rr(x + r->x + (focus ? 2 : 0), y + r->y + (focus ? 2 : 0),
+            r->w - (focus ? 4 : 0), r->h - (focus ? 4 : 0), focus ? 4 : 6);
     text_color(fg);
     ui_print(s, x + r->x + (r->w - (int)ui_text_width(s)) / 2,
                          y + r->y + (r->h - 8) / 2);
@@ -734,12 +752,16 @@ static void draw_dropdown(int x, int y, int id)
     int tx = x + r->x + 8;
     bool open = id == open_drop;
 
-    if (open) {                                     /* accent ring while open */
+    if (open || (settings_keyboard_focus() && id == hover)) {
         gfx_SetColor(PAL_ACCENT);
-        fill_rr(x + r->x - 1, y + r->y - 1, r->w + 2, r->h + 2, 7);
+        fill_rr(x + r->x - 2, y + r->y - 2, r->w + 4, r->h + 4, 8);
     }
     gfx_SetColor((id == hover || open) ? PAL_LABEL : PAL_BAR);
-    fill_rr(x + r->x, y + r->y, r->w, r->h, 6);
+    fill_rr(x + r->x + ((settings_keyboard_focus() && id == hover && !open) ? 2 : 0),
+            y + r->y + ((settings_keyboard_focus() && id == hover && !open) ? 2 : 0),
+            r->w - ((settings_keyboard_focus() && id == hover && !open) ? 4 : 0),
+            r->h - ((settings_keyboard_focus() && id == hover && !open) ? 4 : 0),
+            (settings_keyboard_focus() && id == hover && !open) ? 4 : 6);
 
     if (sw >= 0) {
         gfx_SetColor((uint8_t)sw);
@@ -908,6 +930,7 @@ void settings_open(void)
     hover = -1;
     open_drop = open_hover = -1;
     drop_scroll = 0;
+    focus_prev_keys = 0;
     dq_n = 0;
     dq_full = false;
 }
@@ -1058,6 +1081,8 @@ void settings_click(int x, int y)
         break;
     case W_CLK24: next.clock24 = 1; break;
     case W_CLK12: next.clock24 = 0; break;
+    case W_FOCUS_ON: next.focus = 1; break;
+    case W_FOCUS_OFF: next.focus = 0; break;
     case W_RESET: next = defaults;  break;
     default: return;
     }
@@ -1066,12 +1091,120 @@ void settings_click(int x, int y)
 
 bool settings_keys(void)
 {
-    /* Keep arrow keys moving the shell cursor. The open list tracks the cursor
-     * through settings_hover(), so it remains navigable without capturing input. */
     return false;
 }
 
 bool settings_press(void)
 {
-    return false;                       /* Enter / 2nd click the hovered widget */
+    return false;
+}
+
+static int focus_neighbor(int id, int dx, int dy)
+{
+    int from_x = wd[id].x * 2 + wd[id].w;
+    int from_y = wd[id].y * 2 + wd[id].h;
+    int best = -1;
+    int best_score = 1000000;
+    int candidate;
+
+    for (candidate = 0; candidate < W_COUNT; candidate++) {
+        int delta_x, delta_y, primary, secondary, score;
+        int candidate_x0, candidate_y0, candidate_x1, candidate_y1;
+
+        if (candidate == id || !visible(candidate)) continue;
+        candidate_x0 = wd[candidate].x;
+        candidate_y0 = wd[candidate].y;
+        candidate_x1 = candidate_x0 + wd[candidate].w;
+        candidate_y1 = candidate_y0 + wd[candidate].h;
+        if (dx) {
+            if (candidate_y0 >= wd[id].y + wd[id].h ||
+                wd[id].y >= candidate_y1) continue;
+        } else if (candidate_x0 >= wd[id].x + wd[id].w ||
+                   wd[id].x >= candidate_x1) continue;
+        delta_x = wd[candidate].x * 2 + wd[candidate].w - from_x;
+        delta_y = wd[candidate].y * 2 + wd[candidate].h - from_y;
+        primary = dx ? delta_x * dx : delta_y * dy;
+        if (primary <= 0) continue;
+        secondary = dx ? delta_y : delta_x;
+        if (secondary < 0) secondary = -secondary;
+        score = primary * 1000 + secondary;
+        if (score < best_score) {
+            best = candidate;
+            best_score = score;
+        }
+    }
+    return best;
+}
+
+bool settings_focus_keys(void)
+{
+    uint16_t keys = kb_Data[7];
+    bool up = (keys & kb_Up) && !(focus_prev_keys & kb_Up);
+    bool down = (keys & kb_Down) && !(focus_prev_keys & kb_Down);
+    bool left = (keys & kb_Left) && !(focus_prev_keys & kb_Left);
+    bool right = (keys & kb_Right) && !(focus_prev_keys & kb_Right);
+
+    focus_prev_keys = keys;
+    if (open_drop >= 0) {
+        int next = open_hover;
+        if (up && next > 0) next--;
+        else if (down && next + 1 < drop_count(open_drop)) next++;
+        if (next != open_hover) {
+            mark_item(open_hover);
+            open_hover = next;
+            drop_clamp_scroll();
+            mark_all();
+        }
+        return up || down;
+    }
+
+    if (hover < 0 || !visible(hover)) {
+        hover = W_TAB0 + tab;
+        mark_widget(hover);
+        return true;
+    }
+    if (!up && !down && !left && !right) return false;
+
+    {
+        int next = up ? focus_neighbor(hover, 0, -1) :
+                   down ? focus_neighbor(hover, 0, 1) :
+                   left ? focus_neighbor(hover, -1, 0) :
+                          focus_neighbor(hover, 1, 0);
+        if (next < 0) return true;
+        mark_widget(hover);
+        hover = next;
+        mark_widget(hover);
+    }
+    return true;
+}
+
+bool settings_focus_press(void)
+{
+    if (open_drop >= 0) {
+        prefs_t next = prefs;
+        int id = open_drop;
+        int item = open_hover;
+        open_drop = open_hover = -1;
+        drop_scroll = 0;
+        mark_all();
+        if (item >= 0 && item < drop_count(id)) {
+            drop_set(&next, id, item);
+            apply(&next);
+        }
+        return true;
+    }
+    if (hover < 0 || !visible(hover)) {
+        hover = W_TAB0 + tab;
+        mark_widget(hover);
+    }
+    {
+        int id = hover;
+        settings_click(wd[id].x + wd[id].w / 2,
+                       wd[id].y + wd[id].h / 2);
+        if (id <= W_TAB2) {
+            hover = id;
+            mark_widget(hover);
+        }
+    }
+    return true;
 }

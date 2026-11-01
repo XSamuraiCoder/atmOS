@@ -105,16 +105,27 @@ static entry_t entries[MAX_DOCK_ENTRIES] = {
     { "SETTING", 7, 0, APP_SETTINGS, 0, 0, -1 },
 };
 static int entry_count = BUILTIN_ENTRY_COUNT;
-static uint8_t dock_pin_sprites[FILES_MAX_PINS][2 + 16 * 16];
 static bool dock_pin_has_icon[FILES_MAX_PINS];
+
+/* The dock sprite buffers live in a heap block, not in .bss (see files.c: app .data + .bss share a
+ * small window that ends at the OS stack guard). The macros keep every use as is. */
+typedef struct {
+    uint8_t pin_sprites[FILES_MAX_PINS][2 + 16 * 16];
 #ifdef HAVE_ICONS
-static uint8_t dock_builtin_sprites[BUILTIN_ENTRY_COUNT][2 + 16 * 16];
+    uint8_t builtin_sprites[BUILTIN_ENTRY_COUNT][2 + 16 * 16];
+#endif
+} dock_mem_t;
+static dock_mem_t *dock_mem;
+#define dock_pin_sprites (dock_mem->pin_sprites)
+#ifdef HAVE_ICONS
+#define dock_builtin_sprites (dock_mem->builtin_sprites)
 #endif
 
 /* ---------- state ---------- */
 static int  cur_x = GFX_LCD_WIDTH / 2;   /* pointer position */
 static int  cur_y = GFX_LCD_HEIGHT / 2;
 static char status[24] = OS_NAME;
+static int dock_focus = -1;
 
 /* ---------- helpers ---------- */
 static uint8_t lerp8(uint8_t a, uint8_t b, int i, int n)
@@ -330,6 +341,8 @@ typedef struct {
     bool (*hover)(int x, int y);   /* pointer moved over the content area */
     bool (*keys)(void);            /* arrows; true = app used them, pointer stays */
     bool (*press)(void);           /* Enter/2nd; true = app handled it */
+    bool (*focus_keys)(void);      /* keyboard-focus navigation, independent of pointer */
+    bool (*focus_press)(void);     /* activate the keyboard-focused control */
     void (*draw_region)(int x, int y, int x0, int y0, int x1, int y1);
     /* optional: screen rectangles (x0,y0,x1,y1) that changed since the last call; the shell
      * repaints only those. Returns the count, or -1 for "repaint the whole window". */
@@ -415,20 +428,32 @@ static bool mod_press(void)
     const atmos_app_t *a = cur_mod();
     return a && a->press && a->press();
 }
+static bool mod_focus_keys(void)
+{
+    return mod_keys();
+}
+static bool mod_focus_press(void)
+{
+    return mod_press();
+}
 
 /* ---------- app table (add new apps here) ---------- */
 static const app_t apps[] = {
     /* NULL title = use the dock entry's name */
-    { NULL, placeholder_draw, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, /* APP_PLACEHOLDER */
+    { NULL, placeholder_draw, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, /* APP_PLACEHOLDER */
     { "Files", files_draw, files_click, files_tick, files_hover,
-      files_keys, files_press, files_draw_region, NULL },         /* APP_FILES */
+      files_keys, files_press, files_focus_keys, files_focus_press,
+      files_draw_region, NULL },                                  /* APP_FILES */
     { "Notes", notes_draw, notes_click, NULL, notes_hover,
-      notes_keys, notes_press, NULL, NULL },                      /* APP_NOTES */
+      notes_keys, notes_press, notes_focus_keys, notes_focus_press,
+      NULL, NULL },                                               /* APP_NOTES */
     { "Settings", settings_draw, settings_click, NULL, settings_hover,
-      settings_keys, settings_press, settings_draw_region,
+      settings_keys, settings_press, settings_focus_keys, settings_focus_press,
+      settings_draw_region,
       settings_dirty },                                           /* APP_SETTINGS */
     { NULL, mod_draw, mod_click, mod_tick, mod_hover,
-      mod_keys, mod_press, NULL, NULL },                          /* APP_MOD */
+      mod_keys, mod_press, mod_focus_keys, mod_focus_press,
+      NULL, NULL },                                               /* APP_MOD */
 };
 
 static bool in_window(void)
@@ -440,6 +465,7 @@ static bool in_window(void)
 
 static void close_window(void)
 {
+    if (open_entry >= 0) dock_focus = open_entry;
     open_app = -1;
     open_entry = -1;
     open_mod = -1;
@@ -656,7 +682,6 @@ static void draw_dock(int hover)
             gfx_SetColor(PAL_ACCENT);
             fill_round_rect(x - 2, y - 2, DOCK_ITEM + 4, DOCK_ITEM + 4, 6);
         }
-
 #ifdef HAVE_ICONS
         if (i < BUILTIN_ENTRY_COUNT && dock_icon[i]) {
             gfx_TransparentSprite(
@@ -854,7 +879,7 @@ static void render_frame(int hover, bool dirty)
         }
         draw_scene_region(s->x - 1, s->y - 1, s->x + CUR_W + 1, s->y + CUR_H + 1, hover);
     }
-    draw_cursor();
+    if (!settings_keyboard_focus()) draw_cursor();
     s->x = cur_x;
     s->y = cur_y;
 
@@ -935,6 +960,7 @@ static void reset_shell_state(void)
     open_app = -1;
     open_entry = -1;
     open_mod = -1;
+    dock_focus = -1;
     memset(slot, 0, sizeof(slot));
     memset(window_dirty, 0, sizeof(window_dirty));
     memset(pending, 0, sizeof(pending));
@@ -977,6 +1003,22 @@ static void move_cursor(void)
     cur_y = (int)(pos_y >> PTR_SHIFT);
 }
 
+static bool move_dock_focus(void)
+{
+    int direction = 0;
+    int previous = dock_focus;
+
+    if (PRESSED(7, kb_Left)) direction = -1;
+    else if (PRESSED(7, kb_Right)) direction = 1;
+    if (!direction || entry_count <= 0) return false;
+
+    if (dock_focus < 0)
+        dock_focus = direction > 0 ? 0 : entry_count - 1;
+    else
+        dock_focus = (dock_focus + direction + entry_count) % entry_count;
+    return dock_focus != previous;
+}
+
 #ifndef SHELL_FLASH_APP
 int main(void);
 
@@ -1012,6 +1054,10 @@ static int shell_main(void)
     if (!flash_app_libraries_ready()) return 1;
 #endif
 
+    /* big tables come from the heap, not .bss: see files.c */
+    if (!dock_mem) dock_mem = (dock_mem_t *)calloc(1, sizeof *dock_mem);
+    if (!dock_mem || !files_alloc() || !notes_alloc()) return 1;
+
     reset_shell_state();
     settings_init();
     mods_load_all();                 /* "atmOS mod: " AppVars: apps + themes registered */
@@ -1044,13 +1090,29 @@ static int shell_main(void)
         }
 
         if (running) {
-            /* while an app window is open, arrows and Enter go to the app
-             * first (keyboard UI); the pointer is only moved when the app
-             * doesn't want the arrows */
-            bool app_keys = open_app >= 0 && apps[open_app].keys &&
-                            apps[open_app].keys();
-            if (app_keys) dirty = true;
-            else move_cursor();
+            bool keyboard_focus = settings_keyboard_focus();
+            bool app_keys = false;
+            if (keyboard_focus && open_app < 0 && dock_focus < 0 &&
+                entry_count > 0) {
+                dock_focus = 0;
+                dirty = true;
+            }
+            if (open_app >= 0) {
+                if (keyboard_focus)
+                    app_keys = apps[open_app].focus_keys
+                        ? apps[open_app].focus_keys()
+                        : (apps[open_app].keys && apps[open_app].keys());
+                else
+                    app_keys = apps[open_app].keys && apps[open_app].keys();
+            }
+            if (keyboard_focus) {
+                if (open_app < 0 && move_dock_focus()) dirty = true;
+                if (app_keys) dirty = true;
+            } else if (app_keys) {
+                dirty = true;
+            } else {
+                move_cursor();
+            }
             if (open_app >= 0 && apps[open_app].tick && apps[open_app].tick())
                 dirty = true;
             if (bar_tick()) dirty = true;
@@ -1060,10 +1122,10 @@ static int shell_main(void)
                 dirty = true;
             }
 
-            /* let the open app track the pointer (hover highlight, edge scroll) */
+            /* Pointer hover is disabled in keyboard-focus mode. */
             {
                 bool now_in = open_app >= 0 && in_window();
-                if (open_app >= 0 && apps[open_app].hover) {
+                if (!keyboard_focus && open_app >= 0 && apps[open_app].hover) {
                     if (now_in) {
                         if (apps[open_app].hover(cur_x - WIN_X,
                                                  cur_y - (WIN_Y + TITLE_H))) {
@@ -1078,23 +1140,40 @@ static int shell_main(void)
                 was_in_win = now_in;
             }
 
-            hover = hit_test();
+            hover = keyboard_focus
+                ? (open_app < 0 ? dock_focus : -1)
+                : hit_test();
             if (open_app == APP_FILES && PRESSED(2, kb_Alpha) &&
                 files_alpha())
                 dirty = true;
             if (PRESSED(6, kb_Enter) || PRESSED(1, kb_2nd)) {
-                /* an app's keyboard handler owns Enter only when the pointer
-                 * isn't on the close dot (pointer "clicks" also use Enter) */
-                int cdx = cur_x - (WIN_X + 10), cdy = cur_y - (WIN_Y + 8);
-                bool on_close = in_window() && cdx * cdx + cdy * cdy <= 36;
-                bool handled = open_app == APP_FILES && files_menu_active() &&
-                               files_press();
+                bool on_close = false;
+                bool handled = false;
                 bool full_redraw = true;
                 int app_before = open_app;
-                if (!handled)
+                if (!keyboard_focus) {
+                    int cdx = cur_x - (WIN_X + 10);
+                    int cdy = cur_y - (WIN_Y + 8);
+                    on_close = in_window() && cdx * cdx + cdy * cdy <= 36;
+                }
+                if (keyboard_focus) {
+                    if (open_app >= 0) {
+                        if (apps[open_app].focus_press)
+                            handled = apps[open_app].focus_press();
+                        else if (apps[open_app].press)
+                            handled = apps[open_app].press();
+                    } else if (dock_focus >= 0 && dock_focus < entry_count) {
+                        launch(&entries[dock_focus]);
+                        handled = true;
+                    }
+                } else {
+                    handled = open_app == APP_FILES && files_menu_active() &&
+                              files_press();
+                }
+                if (!keyboard_focus && !handled)
                     handled = open_app >= 0 && in_window() && !on_close &&
                               apps[open_app].press && apps[open_app].press();
-                {
+                if (!keyboard_focus) {
                     bool click_in_app = !handled && open_app >= 0 && in_window() &&
                                         !on_close && cur_y >= WIN_Y + TITLE_H &&
                                         apps[open_app].dirty;
@@ -1132,7 +1211,9 @@ static int shell_main(void)
                     dirty = true;
                 }
 
-                hover = hit_test();
+                hover = keyboard_focus
+                    ? (open_app < 0 ? dock_focus : -1)
+                    : hit_test();
                 if (full_redraw) dirty = true;
             }
             if (settings_take_changed()) {          /* theme picked in Settings */
@@ -1169,18 +1250,16 @@ static int shell_main(void)
  * A Flash App starts on the OS stack, which the CE guards with a hard limit at $D19881 (a write
  * there is an NMI reset: "stack overflow", RAM cleared). The OS has already used part of it by
  * the time the app starts, so how much is left depends on how the app was launched, and a few
- * hundred bytes are easily enough to hit it. The shell instead runs on a stack of its own,
- * taken from the heap (the heap is far below the OS stack, and does not enlarge the app file
- * the way a static array would). If the allocation fails it carries on with the OS stack.
- * Build with -DSHELL_DEBUG_STACK to see how low the stack gets ("SP ......").
+ * hundred bytes are easily enough to hit it. The shell instead runs on a stack of its own, taken
+ * from the heap. NOT a static array: app .data + .bss live in the small app RAM window that ends
+ * at that same guard ($D1787C..$D19880), so an 8 KB array in BSS pushes the window across
+ * $D19881 and the first write there resets the calculator. Build with -DSHELL_DEBUG_STACK to
+ * see how low the stack gets ("SP ......").
  *
  * NEW: the allocation is now also rejected when the 8 KB block would reach the
  * app RAM / OS stack zone [0xD1787C, 0xD1A881) - the same overlap check
  * mods.c applies to mod images - because a stack placed there pushes through
- * $D19881 after only a few hundred bytes of use. And when the shell ends up on
- * the OS stack anyway, mods are loaded + relocated but never given control
- * (mods_set_entry_allowed(false)): their stack use is unknown, and the debug
- * display shows "OSSTK" so the fallback is visible. */
+ * $D19881 after only a few hundred bytes of use. */
 #ifdef SHELL_FLASH_APP
 #define SHELL_STACK_SIZE 8192
 static int shell_result;
@@ -1189,13 +1268,12 @@ void shell_call_on_stack(void (*fn)(void), void *stack_top);   /* stack.s */
 
 static void shell_main_on_own_stack(void)
 {
+    asm_oslaunch_install();
     shell_result = shell_main();
 }
 
 int main(void)
 {
-    asm_oslaunch_install();      /* NEW: first line - OS menu EXEC / prgmPRGM / */
-                                 /* NEW: Asm(prgmPRGM) launches run via osLaunch.s */
     uint8_t *stack = (uint8_t *)malloc(SHELL_STACK_SIZE);
 
     if (stack && (uintptr_t)stack < 0xD1A881u &&
@@ -1205,18 +1283,17 @@ int main(void)
     }
     if (!stack) {
         /* No safe stack of our own: run on the OS stack, but never let mod
-         * code run there. The flush below is safe here too: no own stack. */
-        int result;
-
+         * code run there. */
         mods_set_entry_allowed(false);
-        result = shell_main();
-        shell_flush();
-        return result;
+        asm_oslaunch_install();
+        shell_result = shell_main();
+        shell_flush();             /* OS stack here: files + flash are safe to touch */
+        return shell_result;
     }
     own_stack = true;
     shell_call_on_stack(shell_main_on_own_stack, stack + SHELL_STACK_SIZE);
-    shell_flush();              /* back on the OS stack: files + flash are safe to touch now */
-    return shell_result;        /* the stack is left allocated: the app is about to exit */
+    shell_flush();                 /* back on the OS stack: files + flash are safe to touch now */
+    return shell_result;           /* the stack is left allocated: the app is about to exit */
 }
 #else
 int main(void)

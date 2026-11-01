@@ -6,6 +6,12 @@ NAME ?= ATMOS
 DESCRIPTION ?= "atmOS Flash App installer"
 ARCHIVED ?= NO
 
+# Keep the installer program named ATMOS.8xp without colliding with the
+# shell's atmOS.obj in the shared BINDIR on case-insensitive filesystems.
+TARGETOBJ ?= INSTALL.obj
+TARGETTMP ?= INSTALL.o
+TARGETMAP ?= INSTALL.map
+
 # Must match shell packaging (Makefile APPVAR_SPLIT_SIZE = 65200).
 APPVAR_SPLIT_SIZE ?= 65200
 

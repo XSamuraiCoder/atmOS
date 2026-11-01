@@ -35,6 +35,7 @@
 	.global	_asm_oslaunch_install
 	.global	_asm_oslaunch_remove
 	.global	_asm_oslaunch_dispatch
+	.global	_asm_oslaunch_returnOS
 	.global	_asm_runProgram_returnOS.restoreHooks
 
 	.extern	_asm_runProgram_main
@@ -216,17 +217,17 @@ osLaunch.kindGot:
 	ld	(_os_launch_flags), a
 
 osLaunch.decide:
-	; take over only when the stock OS cannot run the command itself:
-	;  - archived programs of any kind ("ERR:ARCHIVED" otherwise)
-	;  - prgmNAME of a native or hex program (the OS would read it as BASIC)
-	; Asm( of a RAM program (native or hex) runs fine in the stock OS.
+	; Take over archived programs and native/hex programs so every ASM/C
+	; launch from the OS menu uses the return-to-OS dispatcher. RAM BASIC
+	; programs, including Asm( of BASIC, remain with the stock OS.
 	ld	a, (_os_launch_flags)
 	bit	osLaunch_fArchived, a
 	jp	nz, osLaunch.go
-	bit	osLaunch_fAsm, a
-	jp	nz, osLaunch.pass
 	bit	osLaunch_fNative, a
-	jp	z, osLaunch.pass		; prgmNAME + RAM + plain BASIC: OS run
+	jp	nz, osLaunch.go		; RAM native / hex ASM or C
+	bit	osLaunch_fAsm, a
+	jp	nz, osLaunch.pass		; Asm( of RAM BASIC: stock OS
+	jp	osLaunch.pass			; RAM BASIC via prgmNAME
 
 osLaunch.go:
 	ld	a, 1
@@ -270,12 +271,7 @@ _asm_oslaunch_returnOS:
 	call	ti.HomeUp			; screen so the homescreen is fresh
 osLaunch.retOS.noClr:
 	call	ti.PPutAway
-	; OS routines during the run (ParseInp, editor, other hooks) can clear
-	; our homescreen hook: put it back (upstream CEaShell does the same at
-	; the end of its returnOS)
-	ld	iy, ti.flags
-	ld	hl, hooks_homescreenHook
-	call	ti.SetHomescreenHook
+	; Removed hook reinstallation to prevent re-entrancy issues with existing hooks like asmhook2
 	xor	a, a
 	or	a, 2				; homescreen hook protocol: "handled"
 	ret					; back into the OS, right after the

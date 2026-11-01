@@ -10,6 +10,7 @@
 #include <ti/vars.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "notes.h"
 #include "settings.h"
@@ -65,7 +66,15 @@ typedef struct {
     char     text[NOTE_CAP];
 } note_t;
 
-static note_t  notes[NOTES_MAX];
+/* heap, not .bss (see files.c): the macro keeps every notes[...] use as is */
+static note_t *notes_mem;
+#define notes notes_mem
+
+bool notes_alloc(void)
+{
+    if (!notes_mem) notes_mem = (note_t *)calloc(NOTES_MAX, sizeof(note_t));
+    return notes_mem != NULL;
+}
 static uint8_t note_count;
 static bool    loaded;
 static bool    changed;                 /* RAM copy differs from the AppVar */
@@ -274,11 +283,27 @@ static void print_clipped(const char *s, int len, int x, int y, int max_w)
     ui_print(buf, x, y);
 }
 
+static void fill_round_rect(int x, int y, int w, int h, int r)
+{
+    gfx_FillRectangle(x + r, y, w - 2 * r, h);
+    gfx_FillRectangle(x, y + r, w, h - 2 * r);
+    gfx_FillCircle(x + r, y + r, r);
+    gfx_FillCircle(x + w - r - 1, y + r, r);
+    gfx_FillCircle(x + r, y + h - r - 1, r);
+    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
+}
+
 static void draw_row(int x, int y, int r, bool hot)
 {
     int ry = y + ROW_Y0 + r * row_step();
     int rx = x + ROW_X;
     bool warn = (r > 0 && r == del_row);
+    bool focus = settings_keyboard_focus() && hot;
+
+    if (focus) {
+        gfx_SetColor(PAL_ACCENT);
+        fill_round_rect(rx - 2, ry - 2, ROW_W + 4, row_h() + 4, 5);
+    }
 
     if (r == 0) {
         bool full = note_count >= NOTES_MAX;
@@ -520,7 +545,7 @@ static bool list_keys(void)
         }
         return true;
     }
-    return false;                       /* pointer-first: arrows move the pointer */
+    return false;
 }
 
 bool notes_keys(void)
@@ -538,5 +563,36 @@ bool notes_press(void)
     if (mode != MODE_EDIT) return false;        /* list: Enter clicks the hovered row */
     if (kb_Data[6] & kb_Enter) insert_char('\n');
     else lower_on = !lower_on;                  /* 2nd toggles letter case */
+    return true;
+}
+
+bool notes_focus_keys(void)
+{
+    bool moved = false;
+    if (mode == MODE_EDIT) return notes_keys();
+    if (repeat(&held[1], (kb_Data[7] & kb_Up) != 0)) {
+        if (hover_row < 0) hover_row = 0;
+        else if (hover_row > 0) hover_row--;
+        del_row = -1;
+        moved = true;
+    }
+    if (repeat(&held[2], (kb_Data[7] & kb_Down) != 0)) {
+        if (hover_row < 0) hover_row = 0;
+        else if (hover_row < note_count) hover_row++;
+        del_row = -1;
+        moved = true;
+    }
+    if (hover_row < 0) {
+        hover_row = 0;
+        moved = true;
+    }
+    return moved;
+}
+
+bool notes_focus_press(void)
+{
+    if (mode == MODE_EDIT) return notes_press();
+    if (hover_row < 0) hover_row = 0;
+    notes_click(ROW_X + 1, ROW_Y0 + hover_row * row_step() + 1);
     return true;
 }

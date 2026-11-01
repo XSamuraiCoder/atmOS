@@ -9,6 +9,8 @@
 #define SHELL_APP_NAME "atmOS"   /* installed Flash App name: must match NAME in the Makefile */
 #define FILES_TYPE_APP 0x14
 
+bool files_alloc(void);   /* heap tables for the Files app: call once at startup; false = no memory */
+
 typedef struct {
     char name[9];
     uint8_t type;
@@ -35,6 +37,8 @@ bool files_tick(void);
 bool files_hover(int x, int y);
 bool files_keys(void);
 bool files_press(void);
+bool files_focus_keys(void);
+bool files_focus_press(void);
 bool files_alpha(void);
 bool files_menu_active(void);
 bool files_cancel_menu(void);

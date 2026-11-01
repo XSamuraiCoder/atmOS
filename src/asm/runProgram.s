@@ -31,6 +31,7 @@
 
 	.extern	_asm_utils_clrScrnAndUsedRAM
 	.extern	_asm_oslaunch_dispatch
+	.extern	_asm_oslaunch_returnOS
 	.extern	_os_launch_return_os_flag
 
 ;--------------------------------------
@@ -160,6 +161,11 @@ main.ASMLoaded:
 	set	ti.appAutoScroll, (iy + ti.appFlags)
 	call	main.vectorsSetup
 	ld	hl, main.return
+	ld	a, (_os_launch_return_os_flag)
+	or	a, a
+	jr	z, main.native.returnReady
+	ld	hl, main.returnOS
+main.native.returnReady:
 	push	hl
 	jp	ti.userMem
 
@@ -263,6 +269,11 @@ main.loadComplete.ready:
 	call	main.vectorsSetup
 	ei
 	ld	hl, main.return
+	ld	a, (_os_launch_return_os_flag)
+	or	a, a
+	jr	z, main.basic.returnReady
+	ld	hl, main.returnOS
+main.basic.returnReady:
 	push	hl
 	jp	ti.ParseInp
 
@@ -392,6 +403,16 @@ main.errWait:
 
 ;---------- return from program ----------
 main.return:
+	call	main.returnCleanup
+	jp	_asm_oslaunch_dispatch
+
+; The OS-launch callback is selected before the program runs. Cleanup can
+; clear app RAM, so the return path must not depend on the launch flag here.
+main.returnOS:
+	call	main.returnCleanup
+	jp	_asm_oslaunch_returnOS
+
+main.returnCleanup:
 	ld	iy, ti.flags
 	ei
 	call	ti.PopErrorHandler
@@ -422,7 +443,7 @@ main.retDebounce:
 	xor	a, a
 	ld	(ti.kbdGetKy), a
 	res	ti.monAbandon, (iy + ti.monFlags)
-	jp	_asm_oslaunch_dispatch	; NEW: OS launch -> homescreen, else shell
+	ret
 
 ;---------- app vectors + error handler ----------
 main.vectorsSetup:

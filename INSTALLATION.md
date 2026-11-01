@@ -3,10 +3,10 @@
 Run `make` with the CE C/C++ Toolchain installed. All generated deliverables
 are placed in the shared `bin/` folder:
 
-- `bin/SHELL.8ek`: the Flash App payload.
-- `bin/SHELL.0.8xv` (and any subsequent numbered files): AppVars named
-  `APP0`, `APP1`, etc., containing the split payload.
-- `bin/INSTALL.8xp`: the separate installer program.
+- `bin/atmOS.8ek`: the Flash App payload.
+- `bin/atmOS.0.8xv` (and any subsequent numbered files): AppVars named
+  `ATMOS0`, `ATMOS1`, etc., containing the split payload.
+- `bin/ATMOS.8xp`: the separate installer program.
 - `bin/clibs.8xg`: the CE runtime libraries required by the shell at startup.
 
 Build steps are available individually with `make flash-app`, `make appvars`,
@@ -23,11 +23,18 @@ the group before running the shell. The production shell requires `LibLoad`,
 `FILEIOC`, `GRAPHX`, and `KEYPADC`. Without a required library, the application
 cannot start and may return to the calculator home screen.
 
-Then transfer `INSTALL.8XP` and **all** `SHELL.*.8xv` files from `bin/` to the
-calculator. Run `INSTALL` from the calculator's program menu and follow its
+Then transfer `ATMOS.8XP` and the generated `atmOS.0.8xv`, `atmOS.1.8xv`
+files from `bin/` to the calculator. Run `ATMOS` from the calculator's program menu and follow its
 prompts. The installer offers to delete itself and the payload AppVars after a
 successful install; the installed app remains in the APPS menu. Keep the CE
 library AppVars archived; they are required every time the app starts.
+
+## Updating
+
+The installer does not overwrite an existing Flash App. Before updating,
+delete atmOS from Mem Mgmt/Del > Apps, then transfer the new `atmOS.*.8xv`
+files and `ATMOS.8xp` and run `ATMOS`. Leave `SHLSET`, `SHNOTES`, and
+`SHLPINS` in place to keep settings, notes, and pinned items.
 
 Run `make clean` before rebuilding if you change the AppVar prefix or split
 size, or if an older build left extra numbered payload files.
@@ -40,22 +47,23 @@ only, keeping icon-cache RAM bounded. Both test builds use this shared desktop
 UI and Files browser. The no-FILEIOC variant uses CE OS
 symbol-table/variable-size APIs, while the FILEIOC variant uses FILEIOC.
 
-Build each test and its matching installer:
+Build each test and its matching installer. For those separate test builds,
+set the installer target name explicitly:
 
 ```text
 make -C test-files-fileioc
-make -C installer -B APPVAR_PREFIX=FI BINDIR=../test-files-fileioc-installer-bin
+make -C installer -B NAME=ATMOS TARGETOBJ=INSTALL.obj TARGETTMP=INSTALL.o TARGETMAP=INSTALL.map APPVAR_PREFIX=FI BINDIR=../test-files-fileioc-installer-bin
 make -C test-files-no-fileioc
-make -C installer -B APPVAR_PREFIX=NF BINDIR=../test-files-no-fileioc-installer-bin
+make -C installer -B NAME=ATMOS TARGETOBJ=INSTALL.obj TARGETTMP=INSTALL.o TARGETMAP=INSTALL.map APPVAR_PREFIX=NF BINDIR=../test-files-no-fileioc-installer-bin
 ```
 
 For the FILEIOC test, transfer
 `test-files-fileioc-bin/FILETEST.0.8xv` (`FI0`) and
-`test-files-fileioc-installer-bin/INSTALL.8xp`, run `INSTALL`, then launch
+`test-files-fileioc-installer-bin/ATMOS.8xp`, run `ATMOS`, then launch
 `FILETEST`. It requires FILEIOC, GRAPHX, and KEYPADC.
 
 For the no-FILEIOC test, transfer `test-files-no-fileioc-bin/NOFILE.0.8xv`
-(`NF0`) and `test-files-no-fileioc-installer-bin/INSTALL.8xp`, run `INSTALL`,
+(`NF0`) and `test-files-no-fileioc-installer-bin/ATMOS.8xp`, run `ATMOS`,
 then launch `NOFILE`. It requires only GRAPHX and KEYPADC. Remove the
 corresponding installed test app before reinstalling a rebuilt version.
 
@@ -66,8 +74,8 @@ variable sizes on the calculator. The Apps folder scans installed Flash App
 headers and exposes each app as a launchable tile.
 
 Build the production shell with `make appvars installer`. It is emitted as
-`bin/SHELL.8ek` and `bin/SHELL.0.8xv` (AppVar `APP0`); the matching installer
-is `bin/INSTALL.8xp`.
+`bin/atmOS.8ek` and `bin/atmOS.0.8xv` (AppVar `ATMOS0`); the matching installer
+is `bin/ATMOS.8xp`.
 
 This installer writes to Flash. Back up calculator data first, use only a
 compatible TI-84 Plus CE and OS, and do not reset or power off during the

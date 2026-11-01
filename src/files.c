@@ -89,6 +89,16 @@ bool files_press(void)
     return false;
 }
 
+bool files_focus_keys(void)
+{
+    return false;
+}
+
+bool files_focus_press(void)
+{
+    return false;
+}
+
 bool files_alpha(void)
 {
     return false;
@@ -127,7 +137,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
  *  - hovering past the left/right edges of the grid flips pages;
  *    page dots at the bottom show where you are
  *
- * Hit testing is pointer-driven; arrows/Enter stay free for the shell cursor.
+ * The shell provides separate pointer and keyboard-focus input paths.
  */
 
 #include <graphx.h>
@@ -135,6 +145,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include <fileioc.h>
 #include <ti/tokens.h>
 #else
+#include <stdlib.h>
 #include <ti/vars.h>
 #endif
 #include <keypadc.h>
@@ -144,6 +155,7 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include <string.h>
 #include "files.h"
 #include "debug_stack.h"
+#include "settings.h"
 #include "ui_text.h"
 #include "program_kind.h"
 
@@ -208,11 +220,9 @@ typedef struct {
 
 typedef enum { F_PROGRAMS, F_APPVARS, F_APPS } folder_t;
 
-static file_var_t vars[MAX_ITEMS];
 static int var_count = 0;
 
 /* visible items: indices into vars[], rebuilt when changing folders */
-static uint16_t view[MAX_ITEMS];
 static int  view_count = 0;
 static folder_t cur_folder = F_PROGRAMS;
 
@@ -221,6 +231,9 @@ static int sel = -1;             /* selected index into view[], -1 = none */
 static int hover_tile = -1;      /* tile slot 0..PER_PAGE-1 under pointer */
 static int  hover_btn = -1;       /* 2/3 = page, 4-6 = folders */
 static int  launch_request = -1;  /* selected program awaiting launch by main */
+static bool keyboard_toolbar_focus;
+static int keyboard_folder_focus;
+static uint16_t keyboard_prev_keys;
 static bool pin_menu_open;
 static int pin_menu_choice;
 static int pin_menu_item = -1;
@@ -236,10 +249,34 @@ typedef struct {
     uint8_t pixels[16 * 16];
 } icon_cache_entry_t;
 
-static icon_cache_entry_t icon_cache[ICON_CACHE_ENTRIES];
 static int icon_cache_page = -1;
 static folder_t icon_cache_folder = F_PROGRAMS;
 #endif
+
+/* The big tables (vars[], view[], icon_cache[]) live in ONE heap block, not in .bss. App .data
+ * + .bss share a small RAM window that ends at the OS stack guard ($D19881); the heap is far
+ * below it. The macros keep every existing vars[...] / view[...] / icon_cache[...] use as is.
+ * main.c calls files_alloc() once at startup. */
+typedef struct {
+    file_var_t vars[MAX_ITEMS];
+    uint16_t   view[MAX_ITEMS];
+#ifndef FILES_NO_ICONS
+    icon_cache_entry_t icon_cache[ICON_CACHE_ENTRIES];
+#endif
+} files_mem_t;
+
+static files_mem_t *files_mem;
+#define vars       (files_mem->vars)
+#define view       (files_mem->view)
+#ifndef FILES_NO_ICONS
+#define icon_cache (files_mem->icon_cache)
+#endif
+
+bool files_alloc(void)
+{
+    if (!files_mem) files_mem = (files_mem_t *)calloc(1, sizeof *files_mem);
+    return files_mem != NULL;
+}
 
 extern bool flash_apps_find_next(void);
 extern void *flash_apps_find_app(const char *name);
@@ -986,6 +1023,9 @@ void files_open(void)
     pin_menu_open = false;
     pin_menu_notice = 0;
     pin_menu_prev_keys = 0;
+    keyboard_toolbar_focus = true;
+    keyboard_folder_focus = (int)cur_folder;
+    keyboard_prev_keys = 0;
 #ifndef FILES_NO_ICONS
     icon_cache_page = -1;
 #endif
@@ -1108,6 +1148,92 @@ bool files_press(void)
     return true;
 }
 
+bool files_focus_keys(void)
+{
+    uint16_t keys = kb_Data[7];
+    bool left = (keys & kb_Left) && !(keyboard_prev_keys & kb_Left);
+    bool right = (keys & kb_Right) && !(keyboard_prev_keys & kb_Right);
+    bool up = (keys & kb_Up) && !(keyboard_prev_keys & kb_Up);
+    bool down = (keys & kb_Down) && !(keyboard_prev_keys & kb_Down);
+    bool changed = false;
+    int next;
+
+    keyboard_prev_keys = keys;
+    if (pin_menu_open) return files_keys();
+
+    if (keyboard_toolbar_focus) {
+        if (left && keyboard_folder_focus > 0) {
+            keyboard_folder_focus--;
+            changed = true;
+        } else if (right && keyboard_folder_focus < 2) {
+            keyboard_folder_focus++;
+            changed = true;
+        }
+        if (down) {
+            keyboard_toolbar_focus = false;
+            if (view_count > 0) {
+                int first = page * PER_PAGE;
+                int target = first + keyboard_folder_focus;
+                if (target >= view_count || target >= first + PER_PAGE)
+                    target = first;
+                sel = target;
+            }
+            changed = true;
+        }
+        hover_btn = 4 + keyboard_folder_focus;
+        hover_tile = -1;
+    } else {
+        if (up && (view_count == 0 || sel < 0 ||
+                   sel % PER_PAGE < COLS)) {
+            keyboard_toolbar_focus = true;
+            keyboard_folder_focus = sel >= 0 ? sel % COLS : (int)cur_folder;
+            hover_btn = 4 + keyboard_folder_focus;
+            hover_tile = -1;
+            changed = true;
+        } else if (view_count > 0) {
+            if (sel < 0 || sel >= view_count) sel = page * PER_PAGE;
+            next = sel;
+            if (left && sel % COLS > 0) next--;
+            else if (right && sel % COLS < COLS - 1 &&
+                     sel + 1 < view_count &&
+                     (sel % PER_PAGE) / COLS ==
+                         ((sel + 1) % PER_PAGE) / COLS &&
+                     (sel + 1) / PER_PAGE == sel / PER_PAGE) next++;
+            else if (up && sel % PER_PAGE >= COLS) next -= COLS;
+            else if (down && sel % PER_PAGE < COLS &&
+                     sel + COLS < view_count &&
+                     (sel + COLS) / PER_PAGE == sel / PER_PAGE) next += COLS;
+            if (next != sel) {
+                sel = next;
+                page = sel / PER_PAGE;
+                changed = true;
+            }
+        }
+        hover_btn = -1;
+        hover_tile = sel >= 0 ? sel % PER_PAGE : -1;
+        if (up || down || left || right) changed = true;
+    }
+
+    return changed || left || right || up || down;
+}
+
+bool files_focus_press(void)
+{
+    if (pin_menu_open) return files_press();
+    if (keyboard_toolbar_focus) {
+        hover_btn = 4 + keyboard_folder_focus;
+        files_click(0, 0);
+        keyboard_toolbar_focus = true;
+        keyboard_folder_focus = (int)cur_folder;
+        return true;
+    }
+    if (sel >= 0) {
+        hover_tile = sel % PER_PAGE;
+        files_click(0, 0);
+    }
+    return true;
+}
+
 bool files_alpha(void)
 {
     int idx = -1;
@@ -1185,14 +1311,18 @@ static void draw_toolbar(int x, int y)
     gfx_SetTextTransparentColor(PAL_BAR);
     for (i = 0; i < 3; i++) {
         nx = x + NAV_X0 + i * (NAV_W + NAV_GAP);
-        gfx_SetColor((int)cur_folder == i ? PAL_ACCENT : PAL_BAR_LINE);
+        gfx_SetColor(settings_keyboard_focus() && keyboard_toolbar_focus &&
+                     i == keyboard_folder_focus ? PAL_ACCENT :
+                     (int)cur_folder == i ? PAL_ACCENT : PAL_BAR_LINE);
         fill_round(nx, y + 2, NAV_W, 18, 4);
 
         gfx_SetColor(colors[i]);
         gfx_FillRectangle(nx + 7, y + 7, 12, 3);
         fill_round(nx + 5, y + 9, 16, 7, 2);
 
-        ui_text_color((int)cur_folder == i ? PAL_LABEL : PAL_TEXT);
+        ui_text_color((int)cur_folder == i ||
+                      (settings_keyboard_focus() && keyboard_toolbar_focus &&
+                       i == keyboard_folder_focus) ? PAL_LABEL : PAL_TEXT);
         ui_print(labels[i], nx + 26, y + 7);
     }
 }

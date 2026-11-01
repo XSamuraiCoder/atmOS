@@ -1,12 +1,13 @@
 /*
  * atmOS Installer - first-time setup mirrors the shell's Settings app.
  *
- * The settings, their choices and the SHLSET layout (version 3, 21 bytes) are
+ * The settings, their choices and the SHLSET layout (version 4, 22 bytes) are
  * the same as the shell's settings.c, so what the user picks here is exactly
  * what atmOS loads on its first start:
  *   0 version  1 theme  2 wallpaper  3 accent  4 font (0 default / 4 custom)
  *   5 menu bar tint  6 dock tint  7 pointer speed  8 clock24  9 battery
  *   10 dock labels  11..18 custom font pack AppVar name  19 = 0  20 font index
+ *   21 keyboard focus navigation (0 = off)
  *
  * Themes that mods add (atmos_api_t.register_theme) are found the way the shell finds them:
  * every AppVar starting with "atmOS mod: " is loaded, relocated and its mod_main is called with
@@ -40,8 +41,8 @@
 
 #define MAX_APPVARS 32
 #define STORE_NAME     "SHLSET"
-#define STORE_VERSION  3
-#define STORE_SIZE     21
+#define STORE_VERSION  4
+#define STORE_SIZE     22
 #define STORE_SIZE_V2  11
 
 /* same limits as settings.c */
@@ -461,7 +462,8 @@ static bool load_prefs(void)
     if (!h) return false;
     n = ti_Read(buf, 1, STORE_SIZE, h);
     ti_Close(h);
-    return n >= STORE_SIZE_V2 && (buf[0] == 2 || buf[0] == STORE_VERSION) && sane(buf);
+    return n >= STORE_SIZE_V2 &&
+           (buf[0] == 2 || buf[0] == 3 || buf[0] == STORE_VERSION) && sane(buf);
 }
 
 static void save_prefs(void)
@@ -480,6 +482,7 @@ static void save_prefs(void)
         memcpy(buf + 11, custom[pf.font_sel - 1].var, 8);
         buf[20] = custom[pf.font_sel - 1].index;
     }
+    buf[21] = 0;
     h = ti_Open(STORE_NAME, "w");
     if (!h) return;
     ti_Write(buf, 1, STORE_SIZE, h);
