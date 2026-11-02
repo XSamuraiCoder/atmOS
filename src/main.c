@@ -386,7 +386,17 @@ static uint8_t program_runner_preferences[20];
 uint8_t os_launch_flags;              /* bit 0 = Asm( used, 1 = archived, 2 = native */
 uint8_t os_launch_kind;               /* program_kind.h value for _asm_runProgram_main */
 uint8_t os_launch_return_os_flag;     /* 1 = return to the OS homescreen after the run */
+/* osSizeMenu.s (TI-OS PRGM EXEC menu sizes). Same rules as os_launch_*: the
+ * hook stays installed after the shell exits, app RAM survives program runs,
+ * and every app start zeroes it - flag 0 is the safe "not drawn yet" state. */
+uint8_t os_size_menu_flags;          /* bit 0 = sizes already drawn on the open menu */
+uint8_t os_size_menu_row;            /* row counter while drawing (0..8) */
+uint8_t os_size_menu_vat[3];         /* VAT entry of the row being drawn */
+uint8_t os_size_menu_tenth;          /* decimal digit while formatting */
+uint8_t os_size_menu_begun;          /* nonzero once the first digit was written */
+uint8_t os_size_menu_buf[16];        /* one formatted size string */
 extern void asm_oslaunch_install(void);
+extern void asm_osSizeMenu_install(void);   /* PRGM EXEC menu: sizes after the names */
 #else
 static void run_program(const char *name);
 #endif
@@ -1269,6 +1279,7 @@ void shell_call_on_stack(void (*fn)(void), void *stack_top);   /* stack.s */
 static void shell_main_on_own_stack(void)
 {
     asm_oslaunch_install();
+    asm_osSizeMenu_install();        /* TI-OS PRGM EXEC menu: show program sizes */
     shell_result = shell_main();
 }
 
@@ -1286,6 +1297,7 @@ int main(void)
          * code run there. */
         mods_set_entry_allowed(false);
         asm_oslaunch_install();
+        asm_osSizeMenu_install();    /* OS stack here too: the menu hook is safe */
         shell_result = shell_main();
         shell_flush();             /* OS stack here: files + flash are safe to touch */
         return shell_result;
