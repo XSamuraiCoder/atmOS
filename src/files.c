@@ -1292,6 +1292,33 @@ static void num_str(uint24_t v, char *out)
     out[i] = 0;
 }
 
+/* CEaShell-style size display, but with units: 512B, 1.5KB, 128KB, 1.2MB.
+ * The decimal is dropped when it would be .0 so the string stays short (at
+ * most "1023.9KB", 8 chars); out needs 9+ bytes. */
+static void size_str(uint24_t v, char *out)
+{
+    uint32_t whole, tenth;
+
+    if (v < 1024) {                              /* bytes */
+        num_str(v, out);
+        strcat(out, "B");
+        return;
+    }
+    if (v < 1024u * 1024u) {                     /* kilobytes, one decimal */
+        whole = v / 1024;
+        tenth = (v % 1024) * 10 / 1024;
+    } else {                                     /* megabytes, one decimal */
+        whole = v / (1024u * 1024u);
+        tenth = (v % (1024u * 1024u)) * 10 / (1024u * 1024u);
+    }
+    num_str((uint24_t)whole, out);
+    if (tenth) {
+        char dec[3] = { '.', (char)('0' + tenth), 0 };
+        strcat(out, dec);
+    }
+    strcat(out, v < 1024u * 1024u ? "KB" : "MB");
+}
+
 static bool overlaps(int x0, int y0, int x1, int y1,
                      int bx0, int by0, int bx1, int by1)
 {
@@ -1330,7 +1357,7 @@ static void draw_toolbar(int x, int y)
 static void draw_tile(const file_var_t *v, const uint8_t *icon,
                       int x, int y, bool selected)
 {
-    char size_s[8];
+    char size_s[12];
 #ifdef FILES_NO_ICONS
     (void)icon;
 #endif
@@ -1361,7 +1388,7 @@ static void draw_tile(const file_var_t *v, const uint8_t *icon,
     if (v->type == OS_TYPE_APP)
         strcpy(size_s, "APP");
     else if (v->size_valid)
-        num_str(v->size, size_s);
+        size_str(v->size, size_s);
     else
         strcpy(size_s, "?");
     ui_print(size_s,
