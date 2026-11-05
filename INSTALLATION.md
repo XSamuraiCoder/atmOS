@@ -86,8 +86,9 @@ in an unusable state. This build does not install or invoke arTIfiCE.
 In Files, select a BASIC, ASM, C, ICE program, or installed Flash App and press
 Alpha to open its taskbar menu. Choose **Pin to taskbar** or **Unpin from
 taskbar** with the arrow keys and Enter; Clear dismisses the menu. Up to six
-items can be pinned alongside the three built-in dock icons. Pins persist in
-the archived `SHLPINS` AppVar; keep it on the calculator to retain them.
+items can be pinned alongside the three built-in dock icons. Pins update the
+dock immediately and are saved to the archived `SHLPINS` AppVar when atmOS
+exits; keep it on the calculator to retain them.
 Embedded program and Flash App icons retain their source colors using the
 TI icon palette mapping and the shell's expanded dock palette; palette index
 `0xFF` is rendered as white. Items without icons use a letter fallback.

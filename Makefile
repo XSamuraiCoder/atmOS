@@ -38,7 +38,7 @@ APPVAR_SPLIT_SIZE = 65200
 CLIBS_VERSION = v15.0
 CLIBS_FILE = $(BINDIR)/clibs.8xg
 
-.PHONY: all flash-app appvars installer installer-clean libraries package clean
+.PHONY: all flash-app appvars installer installer-clean libraries package clean z80
 
 all: package
 
@@ -62,7 +62,9 @@ installer-clean:
 
 package: appvars installer libraries
 
+ifneq ($(MAKECMDGOALS),z80)
 include $(shell cedev-config --makefile)
+endif
 
 ifeq ($(OS),Windows_NT)
 RMDIR = ( rmdir /s /q $(word 1,$1) 2>nul || call ) & ( rmdir /s /q $(word 2,$1) 2>nul || call )

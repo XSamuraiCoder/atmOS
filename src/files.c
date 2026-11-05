@@ -25,6 +25,11 @@ files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
     return FILES_PIN_STORAGE_ERROR;
 }
 
+bool files_flush_pins(void)
+{
+    return true;
+}
+
 bool files_take_pins_changed(void)
 {
     return false;
@@ -241,6 +246,12 @@ static int pin_menu_notice;
 static uint16_t pin_menu_prev_keys;
 static bool pins_changed;
 static bool pin_menu_is_pinned;
+#ifndef FILES_NO_FILEIOC
+static files_pin_t pins_cache[FILES_MAX_PINS];
+static size_t pins_cache_count;
+static bool pins_loaded;
+static bool pins_dirty;
+#endif
 
 #ifndef FILES_NO_ICONS
 typedef struct {
@@ -337,7 +348,18 @@ static size_t read_pins(files_pin_t *pins, size_t capacity)
 
 size_t files_get_pins(files_pin_t *pins, size_t capacity)
 {
-    return read_pins(pins, capacity);
+    size_t count, copied;
+
+    if (!pins_loaded) {
+        pins_cache_count = read_pins(pins_cache, FILES_MAX_PINS);
+        pins_loaded = true;
+    }
+
+    count = pins_cache_count;
+    if (!pins) return count;
+    copied = capacity < count ? capacity : count;
+    memcpy(pins, pins_cache, copied * sizeof(*pins));
+    return copied;
 }
 
 bool files_is_pinned(const char *name, uint8_t type)
@@ -353,51 +375,63 @@ bool files_is_pinned(const char *name, uint8_t type)
 
 files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
 {
-    files_pin_t pins[FILES_MAX_PINS];
-    uint8_t record[PIN_RECORD_SIZE], header[6] = {
-        'S', 'H', 'P', 'N', PIN_DATA_VERSION, 0
-    };
-    uint8_t handle;
-    size_t i, count = files_get_pins(pins, FILES_MAX_PINS);
+    /* Update the dock immediately; defer FILEIOC writes until the OS-stack flush. */
+    size_t i, count = files_get_pins(NULL, 0);
 
     for (i = 0; i < count; i++) {
-        if (pins[i].type == pin->type && strcmp(pins[i].name, pin->name) == 0)
+        if (pins_cache[i].type == pin->type &&
+            strcmp(pins_cache[i].name, pin->name) == 0)
             break;
     }
 
     if (pinned) {
         if (i < count) return FILES_PIN_OK;
         if (count == FILES_MAX_PINS) return FILES_PIN_FULL;
-        pins[count++] = *pin;
+        pins_cache[count++] = *pin;
+        pins_cache_count = count;
     } else {
         if (i == count) return FILES_PIN_OK;
         for (; i + 1 < count; i++)
-            pins[i] = pins[i + 1];
-        count--;
+            pins_cache[i] = pins_cache[i + 1];
+        pins_cache_count = --count;
     }
 
+    pins_dirty = true;
+    pins_changed = true;
+    return FILES_PIN_OK;
+}
+
+bool files_flush_pins(void)
+{
+    uint8_t record[PIN_RECORD_SIZE], header[6] = {
+        'S', 'H', 'P', 'N', PIN_DATA_VERSION, 0
+    };
+    uint8_t handle;
+    size_t i, count;
+
+    if (!pins_dirty) return true;
+    count = files_get_pins(NULL, 0);
     handle = ti_Open(PIN_APPVAR, "w");
-    if (!handle) return FILES_PIN_STORAGE_ERROR;
+    if (!handle) return false;
     header[5] = (uint8_t)count;
     if (ti_Write(header, 1, sizeof(header), handle) != sizeof(header))
         goto save_error;
     for (i = 0; i < count; i++) {
-        record[0] = pins[i].type;
-        record[1] = pins[i].program_kind;
-        memcpy(record + 2, pins[i].name, 8);
+        record[0] = pins_cache[i].type;
+        record[1] = pins_cache[i].program_kind;
+        memcpy(record + 2, pins_cache[i].name, 8);
         if (ti_Write(record, 1, sizeof(record), handle) != sizeof(record))
             goto save_error;
     }
     if (!ti_SetArchiveStatus(true, handle))
         goto save_error;
-    if (!ti_Close(handle))
-        return FILES_PIN_STORAGE_ERROR;
-    pins_changed = true;
-    return FILES_PIN_OK;
+    if (!ti_Close(handle)) return false;
+    pins_dirty = false;
+    return true;
 
 save_error:
     ti_Close(handle);
-    return FILES_PIN_STORAGE_ERROR;
+    return false;
 }
 #else
 size_t files_get_pins(files_pin_t *pins, size_t capacity)
@@ -419,6 +453,11 @@ files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
     (void)pin;
     (void)pinned;
     return FILES_PIN_STORAGE_ERROR;
+}
+
+bool files_flush_pins(void)
+{
+    return true;
 }
 #endif
 

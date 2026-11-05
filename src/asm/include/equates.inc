@@ -76,6 +76,10 @@
 .equ getCSCHooks, editLockProgs + 1
 .equ returnLoc, getCSCHooks + 1
 .equ runProgramKind, ti.appData + 64
+.equ osSizeMenuInputA, ti.appData + 80
+.equ osSizeMenuInputBC, ti.appData + 81
+.equ osLaunchPrevHomescreenHook, ti.appData + 84
+.equ osLaunchPrevHomescreenActive, osLaunchPrevHomescreenHook + 3
 
 .equ true, 0xFF
 .equ false, 0x00

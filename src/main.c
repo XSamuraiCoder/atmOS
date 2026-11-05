@@ -194,9 +194,28 @@ static void end_graphics(void)
  * shell_main() has returned (both builds below), never from inside it. */
 static void shell_flush(void)
 {
+    files_flush_pins();     /* write + archive SHLPINS */
     notes_flush();          /* write + archive SHNOTES */
     settings_flush();       /* write + archive SHLSET */
 }
+
+#ifdef SHELL_FLASH_APP
+static void flush_pins_on_os_stack(void)
+{
+    (void)files_flush_pins();
+}
+
+static void flush_pins_before_launch(void)
+{
+    extern void shell_call_on_os_stack(void (*fn)(void));
+    shell_call_on_os_stack(flush_pins_on_os_stack);
+}
+#else
+static void flush_pins_before_launch(void)
+{
+    (void)files_flush_pins();
+}
+#endif
 
 static void fill_round_rect(int x, int y, int w, int h, int r)
 {
@@ -545,10 +564,12 @@ static void launch(const entry_t *e)
         uint8_t var_type, program_kind;
         if (notes_find_program(&prgm, &var_type, &program_kind)) {
 #ifdef SHELL_FLASH_APP
+            flush_pins_before_launch();
             end_graphics();
             asm_runProgram_run(prgm, var_type, program_kind,
                                program_runner_preferences);
 #else
+            flush_pins_before_launch();
             run_program(prgm);
             return;
 #endif
@@ -572,6 +593,7 @@ static void launch(const entry_t *e)
     }
 
     if (e->type == FILES_TYPE_APP) {
+        flush_pins_before_launch();
         end_graphics();
         void *header = flash_apps_find_app(e->name);
         if (header) flash_apps_launch(header);
@@ -580,11 +602,13 @@ static void launch(const entry_t *e)
         return;
     }
 #ifdef SHELL_FLASH_APP
+    flush_pins_before_launch();
     end_graphics();
     /* the kind saved in a pin can be stale; look at the program again */
     asm_runProgram_run(e->name, e->type, files_program_kind(e->name, e->type),
                        program_runner_preferences);
 #else
+    flush_pins_before_launch();
     run_program(e->name);
 #endif
 }
@@ -1203,6 +1227,7 @@ static int shell_main(void)
                     uint8_t program_kind, var_type;
                     if (files_take_launch_request(&prgm, &app_header,
                                                   &program_kind, &var_type)) {
+                        flush_pins_before_launch();
                         if (app_header) {
                             end_graphics();
                             flash_apps_launch(app_header);

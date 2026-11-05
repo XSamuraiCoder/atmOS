@@ -1,82 +1,64 @@
 ;--------------------------------------
 ;
 ; atmOS - osSizeMenu.s
-; Shows program sizes in PRGM EXEC and Flash App sizes in the Apps menu.
-;
-; Technique adapted from CEaShell's hooks.s and prgmMenuHook.s.
-; Copyright 2022-2026 RoccoLox Programs and TIny_Hacker.
-; SPDX-License-Identifier: GPL-3.0-only
-;
-; How it works (all of it CEaShell's empirically established, shipped
-; behavior - see their prgmMenuHook.s):
-;   - The OS GetCSC hook is called with A = $1A whenever an OS menu has
-;     been redrawn (the event CEaShell uses to draw its menu icons).
-;   - In PRGM EXEC, ti.userMenuSA holds the first visible program. Its VAT
-;     entry and later entries are walked in menu order.
-;   - In the Apps menu, ti.userMenuSA holds the first visible app name.
-;     FindAppStart and FindAppCustom walk the OS app directory.
-;   - Each entry's data pointer is read straight from its VAT entry
-;     (CEaShell's icons/getPrgmSize pattern: NL/page/pointer at T-6..
-;     T-3, archived entries get de += 10 + NL) and the size shown is
-;     the 2-byte data length + NL + 9, formatted with one decimal KB
-;     (dropped when zero) and drawn with VPutS at x = 152, rows every
-;     20 px starting at y = 58 - CEaShell's icon row addresses.
-;   - PRGM EXEC is redrawn on each $1A event. The Apps menu is latched
-;     until the next key event to avoid repeated text painting.
-;
-; State lives in main.c's .bss, like the osLaunch.s hook state: app RAM
-; survives after the shell exits (the hook keeps working in the OS) and
-; is zeroed at every app start. The hook stays installed after atmOS
-; exits, so the EXEC menu keeps showing sizes until a RAM reset.
-;
-; Flash App build only: add this file to the Makefile's asm sources.
+; Shows size of the currently selected program in PRGM EXEC,
+; and app sizes in the Apps menu.
 ;
 ;--------------------------------------
 	.assume	adl=1
 	.include	"src/asm/include/equates.inc"
-
 	.global	_asm_osSizeMenu_install
 	.extern	_os_size_menu_row
 	.extern	_os_size_menu_vat
 	.extern	_os_size_menu_tenth
 	.extern	_os_size_menu_begun
 	.extern	_os_size_menu_buf
+	.extern	_os_size_menu_flags
 
-;---------------- install ----------------
-; Mirrors _asm_oslaunch_install: force-install (no chaining), same as
-; the project's other hooks.
 _asm_osSizeMenu_install:
 	ld	iy, ti.flags
-	; CEaShell keeps ti.catalog1HookPtr nonzero the entire time their
-	; GetCSC hook is active, and their getCSCHook does nothing when it
-	; is 0 - mirror that ritual exactly: store a nonzero value, then
-	; clear the active bit so the value is never called as a real
-	; catalog hook (their _asm_hooks_installGetCSCHook does this)
-	ld	hl, 1
-	ld	(ti.catalog1HookPtr), hl
-	call	ti.ClrCatalog1Hook
 	ld	hl, osSizeMenu_hook
 	jp	ti.SetGetCSCHook
 
-;---------------- the hook ----------------
 	.section	.text
-
 osSizeMenu_hook:
 	db	$83
 	push	af
-	cp	a, $1A			; menu redrawn event
+	cp	a, $1A
 	jr	z, osSizeMenu_update
-	pop	af			; any other event (a key, the ON
-	push	af
+	pop	af
+	push	af			; keep the key for the tests below
+	; Only keys that close the menu or change tab hide the size. (Other nonzero values reach this
+	; hook too - a hide on "any key" erased the size right after it was drawn.)
+	cp	a, ti.skEnter
+	jr	z, osSizeMenu_keyHide
+	cp	a, ti.skClear
+	jr	z, osSizeMenu_keyHide
+	cp	a, ti.skLeft
+	jr	z, osSizeMenu_keyHide
+	cp	a, ti.skRight
+	jr	z, osSizeMenu_keyHide
+	cp	a, ti.skMode
+	jr	z, osSizeMenu_keyHide
+	cp	a, ti.skPrgm
+	jr	z, osSizeMenu_keyHide
+	cp	a, 39			; Apps (this toolchain has no ti.skApps)
+	jr	z, osSizeMenu_keyHide
+	jr	osSizeMenu_noKey
+osSizeMenu_keyHide:
+	ld	a, (_os_size_menu_buf + 15)
+	or	a, a
+	jr	z, osSizeMenu_noKey	; no size on screen
+	call	osSizeMenu_hideSlot
+osSizeMenu_noKey:
 	xor	a, a
-	ld	(_os_size_menu_flags), a	; CEaShell clears its draw latch on keys
+	ld	(_os_size_menu_flags), a
 	pop	af
 	cp	a, $1B
-	ret	nz			; $1A redraws anyway
+	ret	nz
 	or	a, a
-	ld	a, b			; return the ON key state (b, usually 0)
-	ret				; $1B is sk5 in the GetCSC table:
-					; returning it made the OS type 5s!
+	ld	a, b
+	ret
 
 osSizeMenu_update:
 	push	bc
@@ -101,13 +83,12 @@ osSizeMenu_update:
 
 osSizeMenu_execMenu:
 	ld	a, (ti.menuCurrentSub)
-	cp	a, ti.mPrgm_Run		; EXEC tab only (see header)
+	cp	a, ti.mPrgm_Run
 	jr	nz, osSizeMenu_pass
 	ld	a, (ti.menuNumItems)
 	or	a, a
-	jr	z, osSizeMenu_pass		; empty menu
-	call	osSizeMenu_drawRows	; redraw every $1A: the text always
-					; lands on top of the OS's own paint
+	jr	z, osSizeMenu_pass
+	call	osSizeMenu_drawSelected
 osSizeMenu_pass:
 	pop	ix
 	pop	hl
@@ -117,11 +98,10 @@ osSizeMenu_pass:
 	cp	a, $1B
 	ret	nz
 	or	a, a
-	ld	a, b			; same ON-event convention as above
+	ld	a, b
 	ret
 
-; Flash Apps live in the app directory, not the VAT. Find the first visible
-; app by name, then use the OS app iterator to follow the displayed order.
+; ---- Apps menu (unchanged) ----
 osSizeMenu_drawApps:
 	ld	hl, ti.userMenuSA
 	push	hl
@@ -134,7 +114,6 @@ osSizeMenu_drawApps:
 	ld	(_os_size_menu_vat), de
 	xor	a, a
 	ld	(_os_size_menu_row), a
-
 osSizeMenu_appLoop:
 	ld	a, (_os_size_menu_row)
 	cp	a, 9
@@ -151,7 +130,6 @@ osSizeMenu_appLoop:
 	ld	(_os_size_menu_vat), de
 	jr	osSizeMenu_appLoop
 
-; App start address in _os_size_menu_vat; return its size in BC kilobytes.
 osSizeMenu_appSize:
 	ld	hl, (_os_size_menu_vat)
 	push	hl
@@ -162,7 +140,7 @@ osSizeMenu_appSize:
 	sbc	hl, de
 	inc	hl
 	inc	hl
-	inc	hl				; CEaShell's app-size convention
+	inc	hl
 	ld	bc, 0
 	ld	de, 1024
 osSizeMenu_appKBLoop:
@@ -175,7 +153,6 @@ osSizeMenu_appKBDone:
 	add	hl, de
 	ret
 
-; bc = integer kilobytes -> "1234KB" at the common output buffer.
 osSizeMenu_formatAppKB:
 	xor	a, a
 	ld	(_os_size_menu_begun), a
@@ -244,129 +221,226 @@ osSizeMenu_appUnit:
 	ld	(de), a
 	ret
 
-;---------------- draw the visible rows ----------------
-osSizeMenu_drawRows:
-	ld	hl, ti.userMenuSA	; OP1 name of the first visible item
+; ---- Selected program size (EXEC) ----
+; ti.progCurrent is the hovered program: its size comes from ChkFindSym on that name (this part
+; is what showed the right "9.4KB"). Which ROW it is on is read off the screen: the OS draws the
+; selected row's "N:" label as a black box at x = 0, every other row's label has a white
+; background (see osSizeMenu_hoverRow). The text is built first and padded with spaces to a fixed
+; width, then painted with ONE VPutS (no clear + draw flash). When the hover moves, only the
+; previous row's slot is blanked (the OS does not repaint x = 152 on a cursor move). The OS's pen
+; position and text colors are saved and restored around every paint.
+;
+; Scratch in _os_size_menu_buf (16 bytes; formatted text never exceeds 9):
+;   buf + 15 = last painted row + 1 (0 = none)
+osSizeMenu_drawSelected:
+	call	osSizeMenu_hoverRow		; a = hovered row (0-8), carry = none found
+	jp	c, osSizeMenu_noSel
+	ld	(_os_size_menu_row), a
+	ld	a, (_os_size_menu_buf + 15)	; last painted row + 1
+	or	a, a
+	jr	z, osSizeMenu_selSize
+	dec	a
+	ld	hl, _os_size_menu_row
+	cp	a, (hl)
+	jr	z, osSizeMenu_selSize		; same row: the new text covers it
+	call	osSizeMenu_paintBlank		; the hover moved: blank the old slot (a = old row)
+osSizeMenu_selSize:
+	ld	hl, ti.progCurrent
 	call	ti.Mov9ToOP1
 	call	ti.ChkFindSym
-	ret	c			; anchor not found: nothing to draw
-	ld	(_os_size_menu_vat), hl	; hl = its VAT entry (type byte)
-	xor	a, a
-	ld	(_os_size_menu_row), a
-
-osSizeMenu_rowLoop:
-	ld	hl, (_os_size_menu_vat)
-	ld	bc, (ti.pTemp)
-	or	a, a
-	sbc	hl, bc
-	ret	z
-	ret	c
-	add	hl, bc
+	jr	c, osSizeMenu_selFail
 	ld	a, (hl)
-	and	a, $1F			; type (bits 7-5 hold the name length)
+	and	a, $1F
 	cp	a, ti.ProgObj
-	jr	z, osSizeMenu_include
+	jr	z, osSizeMenu_selOk
 	cp	a, ti.ProtProgObj
-	jp	nz, osSizeMenu_next
-
-osSizeMenu_include:
-	; the OS menu hides its temporary programs (prgm#, prgm!): their
-	; name's last character is < 'A' (CEaShell's check)
-	ld	hl, (_os_size_menu_vat)
-	ld	bc, -7
-	add	hl, bc
-	ld	a, (hl)			; last name character
-	cp	a, ti.tA
-	jp	c, osSizeMenu_next
-	; only 9 rows fit on screen
-	ld	a, (_os_size_menu_row)
-	cp	a, 9
-	ret	z
-	; ---- size straight from the VAT entry (CEaShell's icons/
-	;      getPrgmSize pattern - no per-row ChkFindSym) ----
-	ld	hl, (_os_size_menu_vat)
+	jr	nz, osSizeMenu_selFail
+osSizeMenu_selOk:
 	ld	bc, -6
-	add	hl, bc			; hl -> name length byte (T-6)
-	ld	c, (hl)			; c = NL
+	add	hl, bc
+	ld	c, (hl)				; c = NL
 	inc	hl
-	ld	a, (hl)			; a = page byte
+	ld	a, (hl)				; page byte
 	ld	(ti.scrapMem + 2), a
 	ld	de, (ti.scrapMem)
 	inc	hl
-	ld	d, (hl)			; data pointer high
+	ld	d, (hl)				; data pointer high
 	inc	hl
-	ld	e, (hl)			; data pointer low
+	ld	e, (hl)				; data pointer low
+	push	bc
 	call	ti.ChkInRam
-	jr	z, osSizeMenu_dataOK
-	push	hl
-	ld	hl, 10			; archived: skip the flash record header
+	jr	z, osSizeMenu_selData
+	ld	hl, 10				; archived: skip the flash record header
 	add	hl, de
-	ld	a, c			; a = NL (c survives ChkInRam)
+	ld	a, c
 	ld	bc, 0
 	ld	c, a
 	add	hl, bc
-	ex	de, hl			; de += 10 + NL
-	pop	hl
-
-osSizeMenu_dataOK:
-	; de -> program data; its first 2 bytes are the data length
+	ex	de, hl				; de += 10 + NL
+osSizeMenu_selData:
+	pop	bc
 	ld	a, (de)
 	ld	l, a
 	inc	de
 	ld	a, (de)
-	ld	h, a			; hl = raw data length
-	ld	a, c			; c = NL
-	add	a, 9			; CEaShell's convention: the OS style
-	ld	c, a			; size is length + NL + 9
-	ld	b, 0
-	add	hl, bc			; hl = size
-	ld	b, h
-	ld	c, l			; bc = size in bytes
-	call	osSizeMenu_format
-	call	osSizeMenu_drawText
-	ld	hl, _os_size_menu_row
-	inc	(hl)
-
-osSizeMenu_next:
-	; next entry's type byte = T - 7 - NL
-	ld	hl, (_os_size_menu_vat)
-	ld	bc, -6
-	add	hl, bc
-	ld	a, (hl)			; NL
-	add	a, 7
+	ld	h, a				; hl = raw data length
+	ld	a, c
+	add	a, 9				; size = length + NL + 9
 	ld	c, a
 	ld	b, 0
-	ld	hl, (_os_size_menu_vat)
-	or	a, a
-	sbc	hl, bc
-	ld	(_os_size_menu_vat), hl
-	; The next iteration checks pTemp before dereferencing this entry.
-	jp	osSizeMenu_rowLoop
+	add	hl, bc
+	ld	b, h
+	ld	c, l				; bc = size in bytes
+	call	osSizeMenu_format
+	call	osSizeMenu_pad
+	jr	osSizeMenu_selPaint
+osSizeMenu_selFail:
+	ld	a, (_os_size_menu_row)		; lookup failed: show nothing rather than a wrong size
+	call	osSizeMenu_paintBlank
+	xor	a, a
+	ld	(_os_size_menu_buf + 15), a
+	ret
+osSizeMenu_selPaint:
+	ld	a, (_os_size_menu_row)
+	call	osSizeMenu_paintAt
+	ld	a, (_os_size_menu_row)
+	inc	a
+	ld	(_os_size_menu_buf + 15), a
+	ret
 
-;---------------- size formatting ----------------
-; bc = size (0..65535) -> string at _os_size_menu_buf:
-;   < 1000:   "512B" (no leading zeros, lone "0" for size 0)
-;   >= 1000:  "9.4KB" (the decimal is dropped when zero)
-; Uses balanced DE saves around arithmetic that needs DE as scratch, plus
-; the _os_size_menu_begun/_tenth scratch bytes.
+; -> a = row (0-8) whose "N:" label is drawn selected (black at x = 2), carry set when none.
+; 16 bpp VRAM: pixel (2, 64 + 20 * row) is at $D40000 + (y * 320 + 2) * 2 = $D4A004 + row * $3200.
+osSizeMenu_hoverRow:
+	ld	hl, $D4A004
+	ld	bc, $3200
+	ld	d, 0
+osSizeMenu_hoverLoop:
+	ld	a, (hl)
+	inc	hl
+	or	a, (hl)				; both bytes zero = black
+	dec	hl
+	jr	z, osSizeMenu_hoverFound
+	add	hl, bc
+	inc	d
+	ld	a, d
+	cp	a, 9
+	jr	nz, osSizeMenu_hoverLoop
+	scf
+	ret
+osSizeMenu_hoverFound:
+	ld	a, d
+	or	a, a				; carry clear
+	ret
+
+; No hovered program on screen: blank the last painted slot, if any.
+osSizeMenu_noSel:
+	ld	a, (_os_size_menu_buf + 15)
+	or	a, a
+	ret	z
+	dec	a
+	call	osSizeMenu_paintBlank
+	xor	a, a
+	ld	(_os_size_menu_buf + 15), a
+	ret
+
+; Blank the painted slot from the hook's key path (keeps every register the caller may use).
+osSizeMenu_hideSlot:
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	call	osSizeMenu_noSel
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; Text buffer = 8 spaces (DE -> start of the buffer, then falls into the padding loop).
+osSizeMenu_blank:
+	ld	de, _os_size_menu_buf
+; DE -> end of the text: pad with spaces up to 14 characters, then the 0. (The built-in font's
+; space is only ~2 px wide, so 8 characters did not cover the old text; buf + 15 is kept.)
+osSizeMenu_pad:
+	ld	hl, _os_size_menu_buf + 14
+osSizeMenu_padLoop:
+	or	a, a
+	sbc	hl, de				; hl = end - de
+	jr	z, osSizeMenu_padEnd
+	jr	c, osSizeMenu_padEnd
+	add	hl, de				; back to the end address
+	ld	a, ' '
+	ld	(de), a
+	inc	de
+	jr	osSizeMenu_padLoop
+osSizeMenu_padEnd:
+	xor	a, a
+	ld	(de), a
+	ret
+
+; A = menu row: blank that row's size slot (a long run of spaces, wider than any size text).
+osSizeMenu_paintBlank:
+	ld	hl, osSizeMenu_spaces
+	jr	osSizeMenu_paintStr
+osSizeMenu_spaces:
+	db	"                       ", 0	; 23 spaces
+
+; A = menu row (0-8): paint _os_size_menu_buf at x = 152 on that row (y = 62 + 20 * row, the
+; same as osSizeMenu_drawText), then restore the OS's pen position and text colors.
+osSizeMenu_paintAt:
+	ld	hl, _os_size_menu_buf
+osSizeMenu_paintStr:
+	ld	(_os_size_menu_vat), hl		; string to draw (scratch: the walk is gone)
+	ld	l, a
+	ld	h, 20
+	mlt	hl
+	ld	de, 62
+	add	hl, de
+	ld	a, l
+	ld	(_os_size_menu_tenth), a	; y (scratch: free here, the format is finished)
+	ld	a, (ti.penRow)
+	push	af
+	ld.sis	de, (ti.penCol & $FFFF)
+	push	de
+	ld.sis	de, (ti.drawFGColor & $FFFF)
+	push	de
+	ld.sis	de, (ti.drawBGColor & $FFFF)
+	push	de
+	ld	a, (_os_size_menu_tenth)
+	ld	(ti.penRow), a
+	ld	de, 152
+	ld.sis	(ti.penCol & $FFFF), de
+	ld	de, $0000
+	ld.sis	(ti.drawFGColor & $FFFF), de
+	ld	de, $FFFF
+	ld.sis	(ti.drawBGColor & $FFFF), de
+	ld	hl, (_os_size_menu_vat)
+	call	ti.VPutS
+	pop	de
+	ld.sis	(ti.drawBGColor & $FFFF), de
+	pop	de
+	ld.sis	(ti.drawFGColor & $FFFF), de
+	pop	de
+	ld.sis	(ti.penCol & $FFFF), de
+	pop	af
+	ld	(ti.penRow), a
+	ret
 
 osSizeMenu_format:
 	xor	a, a
-	ld	(_os_size_menu_begun), a	; leading zero suppression flag
+	ld	(_os_size_menu_begun), a
 	ld	de, _os_size_menu_buf
 	ld	a, b
 	cp	a, 4
 	jr	nc, osSizeMenu_kbPath
-	cp	a, 3				; b == 3: size 768..1023
+	cp	a, 3
 	jr	nz, osSizeMenu_bytesPath
 	ld	a, c
-	cp	a, 232			; c >= 232: size >= 1000
-	jr	nc, osSizeMenu_kbPath		; (hundreds digit would hit 10)
-
-; ---- bytes path: bc = size, 0..999 ----
+	cp	a, 232
+	jr	nc, osSizeMenu_kbPath
 osSizeMenu_bytesPath:
-	push	de			; hLoop uses e as its subtraction scratch
-	ld	l, 0					; l = hundreds digit
+	push	de
+	ld	l, 0
 osSizeMenu_hLoop:
 	ld	a, c
 	sub	a, 100
@@ -380,7 +454,7 @@ osSizeMenu_hLoop:
 	jr	osSizeMenu_hLoop
 osSizeMenu_hDone:
 	pop	de
-	ld	b, 0					; b = tens digit
+	ld	b, 0
 osSizeMenu_tLoop:
 	ld	a, c
 	sub	a, 10
@@ -395,7 +469,7 @@ osSizeMenu_tDone:
 	call	osSizeMenu_emit
 	ld	a, c
 	call	osSizeMenu_emit
-	ld	a, (_os_size_menu_begun)	; all-zero value: print a lone "0"
+	ld	a, (_os_size_menu_begun)
 	or	a, a
 	jr	nz, osSizeMenu_bytesEnd
 	ld	a, '0'
@@ -408,31 +482,27 @@ osSizeMenu_bytesEnd:
 	xor	a, a
 	ld	(de), a
 	ret
-
-; ---- KB path: size >= 1000 ----
 osSizeMenu_kbPath:
-	; tenth = ((size & 1023) * 10) >> 10, computed as (x * 5) >> 9
 	push	de
 	ld	a, b
 	and	a, 3
 	ld	h, a
-	ld	l, c					; hl = size & 1023
+	ld	l, c
 	ld	e, l
 	ld	d, h
 	add	hl, hl
 	add	hl, hl
-	add	hl, de				; hl = (size & 1023) * 5
+	add	hl, de
 	ld	a, h
-	srl	a				; a = tenth (0..9)
+	srl	a
 	ld	(_os_size_menu_tenth), a
 	pop	de
-	; whole KB = b >> 2 (0..63), printed without leading zeros
 	ld	a, b
 	srl	a
-	srl	a				; a = whole KB
+	srl	a
 	cp	a, 10
-	jr	c, osSizeMenu_kbOne			; single digit
-	ld	c, a					; two digits: tens by subtraction
+	jr	c, osSizeMenu_kbOne
+	ld	c, a
 	ld	b, '0' - 1
 osSizeMenu_kbTens:
 	inc	b
@@ -450,7 +520,7 @@ osSizeMenu_kbOne:
 	add	a, '0'
 	ld	(de), a
 	inc	de
-	ld	a, (_os_size_menu_tenth)	; decimal part, dropped when zero
+	ld	a, (_os_size_menu_tenth)
 	or	a, a
 	jr	z, osSizeMenu_kbUnit
 	ld	a, '.'
@@ -470,15 +540,12 @@ osSizeMenu_kbUnit:
 	xor	a, a
 	ld	(de), a
 	ret
-
-; emits the digit in a: skipped while it is a leading zero; sets the
-; begun flag once the first digit went out. de advances.
 osSizeMenu_emit:
 	or	a, a
 	jr	nz, osSizeMenu_emitNz
 	ld	a, (_os_size_menu_begun)
 	or	a, a
-	ret	z					; leading zero: emit nothing
+	ret	z
 	ld	a, '0'
 	ld	(de), a
 	inc	de
@@ -491,24 +558,20 @@ osSizeMenu_emitNz:
 	ld	(_os_size_menu_begun), a
 	ret
 
-;---------------- draw one row's string ----------------
-; Rows and column follow CEaShell's EXEC-menu icon addresses:
-; x = 152, y = 58 + 20 * row (text top + 4 to center the ~10 px font).
-; Params are set as the LAST step before VPutS so nothing clobbers them.
 osSizeMenu_drawText:
 	ld	a, (_os_size_menu_row)
 	ld	l, a
 	ld	h, 20
-	mlt	hl			; hl = 20 * row
+	mlt	hl
 	ld	de, 62
 	add	hl, de
 	ld	a, l
 	ld	(ti.penRow), a
 	ld	de, 152
 	ld.sis	(ti.penCol & $FFFF), de
-	ld	de, $0000		; black text remains visible on the white row background
+	ld	de, $0000
 	ld.sis	(ti.drawFGColor & $FFFF), de
-	ld	de, $FFFF		; white: matches the menu rows
+	ld	de, $FFFF
 	ld.sis	(ti.drawBGColor & $FFFF), de
 	ld	hl, _os_size_menu_buf
 	jp	ti.VPutS

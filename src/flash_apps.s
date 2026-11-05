@@ -1,4 +1,5 @@
 .assume	adl=1
+	.equ	DBG_STOP, 0		; set 1..4 to hang at that marker; 0 = off
 	.section .text
 	.include "src/asm/include/equates.inc"
 
@@ -39,6 +40,9 @@ _flash_apps_find_app:
 	ret
 
 _flash_program_return_to_shell:
+	.if DBG_STOP == 3
+	jr	$		; DEBUG marker 3
+	.endif
 	ld	hl,.L_shell_app_name
 	call	ti.FindAppStart
 	jr	c,.L_shell_not_found
@@ -75,10 +79,14 @@ _flash_apps_launch:
 	set	1,(iy+0x0D)
 	res	3,(iy+0x4A)
 	res	5,(iy+0x4C)
-	ld	de,ti.userMem
 	ld	hl,(ti.asm_prgm_size)
+	ld	a,h
+	or	a,l
+	jr	z,.L_no_user_mem
+	ld	de,ti.userMem
 	ex	de,hl
 	call	ti.DelMem
+.L_no_user_mem:
 	ld	hl,0
 	ld	(ti.asm_prgm_size),hl
 
@@ -131,6 +139,9 @@ _flash_apps_launch:
 	add	hl,de
 	ld	de,.L_app_exit	; safe return address for when the app returns
 	push	de
+	.if DBG_STOP == 4
+	jr	$		; DEBUG marker 4
+	.endif
 	jp	(hl)
 
 .L_app_exit:			; FIX: leave to the OS home screen instead of RETing into garbage

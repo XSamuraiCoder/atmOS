@@ -25,6 +25,15 @@
 ; program runs and is zeroed at every app start, which resets the
 ; "return to OS" flag to the safe default (return to the shell).
 ;
+; FIXES (this revision):
+;  - "dec bc" sets no flags: the old "dec bc / jp z" tests after the Asm( tokens read the Z flag
+;    of the cp before them, which is always set there, so EVERY Asm(prgmNAME) went back to the
+;    stock OS. Now BC is tested explicitly.
+;  - the program name is parsed token by token (0-9 A-Z theta, max 8) and the trailing ")" of
+;    Asm( is no longer part of the name; BC = 0 can no longer reach LDIR.
+;  - Z80-mode programs (EF 68/69, BB 6C/6D) are classified as PROGRAM_ASMCALL instead of being
+;    run as TI-BASIC.
+;
 ; Flash App build only (it externs _flash_program_return_to_shell):
 ; add this file to the Makefile's asm sources.
 ;
@@ -53,10 +62,16 @@
 .equ	osLaunch_tokHexSrc,		$7A	; Asm84CEPrgm (hex-text source)
 .equ	osLaunch_tokNative,		$7B	; AsmComp( = native binary prefix
 .equ	osLaunch_iceMark,		$7F	; EF 7B 7F : ICE
+.equ	osLaunch_tokRParen,		$11	; )
+.equ	osLaunch_tokAsm84C,		$68	; EF 68 / EF 69: 84+C Z80-mode program
+.equ	osLaunch_tokAsm84CCmp,	$69
+.equ	osLaunch_tokAsmPrgm,		$6C	; BB 6C / BB 6D: AsmPrgm / AsmComp
+.equ	osLaunch_tokAsmPrgmCmp,	$6D
 ; os_launch_flags bits
 .equ	osLaunch_fAsm,		0	; the command used Asm(
 .equ	osLaunch_fArchived,		1	; the target program is archived
 .equ	osLaunch_fNative,		2	; the target starts with EF 7x
+.equ	osLaunch_fZ80,		3	; Z80-mode assembly (PROGRAM_ASMCALL)
 
 	.section	.text
 
@@ -102,13 +117,18 @@ osLaunch.cmd:
 	jp	z, osLaunch.prgm
 	cp	a, osLaunch_tok2Byte		; Asm(prgmNAME)?
 	jp	nz, osLaunch.pass
+	; dec bc sets no flags on the (e)Z80: every dec bc is followed by an explicit test of BC
 	dec	bc
+	ld	a, b
+	or	a, c
 	jp	z, osLaunch.pass
 	inc	hl
 	ld	a, (hl)
 	cp	a, osLaunch_tokAsmCmd
 	jp	nz, osLaunch.pass
 	dec	bc
+	ld	a, b
+	or	a, c
 	jp	z, osLaunch.pass
 	inc	hl
 	ld	a, (hl)
@@ -125,18 +145,51 @@ osLaunch.prgm:
 	ld	a, ti.ProgObj
 	ld	(de), a
 	inc	de
-	ld	a, b
-	or	a, a
-	jp	nz, osLaunch.name8
-	ld	a, c
-	cp	a, 9
-	jp	c, osLaunch.name		; bc < 9: take the whole rest
-osLaunch.name8:
-	ld	bc, 8			; names are 8 bytes max
 osLaunch.name:
-	ldir
+	ld	a, b
+	or	a, c
+	jr	z, osLaunch.nameEnd	; the line ends with the name
+	ld	a, (hl)
+	cp	a, osLaunch_tokRParen	; ")" closes Asm(
+	jr	z, osLaunch.nameEnd
+	cp	a, '0'			; a name is 0-9, A-Z and theta ($5B)
+	jp	c, osLaunch.pass
+	cp	a, '9' + 1
+	jr	c, osLaunch.nameChar
+	cp	a, 'A'
+	jp	c, osLaunch.pass	; ":" / newline / anything else: not a plain launch
+	cp	a, $5B + 1
+	jp	nc, osLaunch.pass
+osLaunch.nameChar:
+	ld	(de), a
+	inc	de
+	inc	hl
+	dec	bc
+	push	hl
+	ld	hl, ti.OP1 + 9
+	or	a, a
+	sbc	hl, de			; Z once 8 characters are taken
+	pop	hl
+	jr	nz, osLaunch.name
+osLaunch.nameEnd:
 	xor	a, a
 	ld	(de), a			; zero terminator / padding
+	; after the name only the ")" of Asm( may follow
+	ld	a, b
+	or	a, a
+	jp	nz, osLaunch.pass
+	ld	a, c
+	or	a, a
+	jr	z, osLaunch.nameOk
+	dec	a
+	jp	nz, osLaunch.pass	; more than one token left over
+	ld	a, (hl)
+	cp	a, osLaunch_tokRParen
+	jp	nz, osLaunch.pass
+	ld	a, (_os_launch_flags)
+	bit	osLaunch_fAsm, a
+	jp	z, osLaunch.pass	; ")" without Asm(
+osLaunch.nameOk:
 
 	; never touch the OS's own temporary system programs
 	ld	hl, ti.OP1 + 1
@@ -175,20 +228,47 @@ osLaunch.data:
 	; classify like program_kind.h
 	ld	a, (de)
 	cp	a, osLaunch_tokExt		; EF ...
-	jp	nz, osLaunch.basic
+	jp	nz, osLaunch.notExt
 	inc	de
 	ld	a, (de)
 	dec	de
 	cp	a, osLaunch_tokNative		; EF 7B: native binary
 	jp	z, osLaunch.native
 	cp	a, osLaunch_tokHexSrc		; EF 7A: hex-text source
+	jp	z, osLaunch.hex
+	cp	a, osLaunch_tokAsm84C		; EF 68 / EF 69: Z80 mode
+	jp	z, osLaunch.z80
+	cp	a, osLaunch_tokAsm84CCmp
+	jp	z, osLaunch.z80
+	jp	osLaunch.basic
+
+osLaunch.notExt:
+	cp	a, osLaunch_tok2Byte		; BB 6C / BB 6D: AsmPrgm
 	jp	nz, osLaunch.basic
+	inc	de
+	ld	a, (de)
+	dec	de
+	cp	a, osLaunch_tokAsmPrgm
+	jp	z, osLaunch.z80
+	cp	a, osLaunch_tokAsmPrgmCmp
+	jp	z, osLaunch.z80
+	jp	osLaunch.basic
+
+osLaunch.hex:
 	ld	a, 2			; PROGRAM_BASIC: the runner squishes it
 	ld	(_os_launch_kind), a
 	ld	a, (_os_launch_flags)
 	set	osLaunch_fNative, a
-	ld	(_os_launch_flags), a		; but the stock OS cannot run it
-	jp	osLaunch.decide			; from prgmNAME
+	ld	(_os_launch_flags), a		; the stock OS cannot run it from prgmNAME
+	jp	osLaunch.decide
+
+osLaunch.z80:
+	ld	a, 4			; PROGRAM_ASMCALL
+	ld	(_os_launch_kind), a
+	ld	a, (_os_launch_flags)
+	set	osLaunch_fZ80, a
+	ld	(_os_launch_flags), a
+	jp	osLaunch.decide
 
 osLaunch.basic:
 	ld	a, 2			; PROGRAM_BASIC
@@ -217,17 +297,18 @@ osLaunch.kindGot:
 	ld	(_os_launch_flags), a
 
 osLaunch.decide:
-	; Take over archived programs and native/hex programs so every ASM/C
-	; launch from the OS menu uses the return-to-OS dispatcher. RAM BASIC
-	; programs, including Asm( of BASIC, remain with the stock OS.
+	; Take over archived programs, native/hex programs and a bare prgmNAME of a Z80 program.
+	; Left to the stock OS: RAM TI-BASIC, and Asm(prgmNAME) of a RAM Z80 program.
 	ld	a, (_os_launch_flags)
 	bit	osLaunch_fArchived, a
 	jp	nz, osLaunch.go
 	bit	osLaunch_fNative, a
-	jp	nz, osLaunch.go		; RAM native / hex ASM or C
+	jp	nz, osLaunch.go			; RAM native / hex ASM or C
+	bit	osLaunch_fZ80, a
+	jp	z, osLaunch.pass		; RAM TI-BASIC: stock OS
 	bit	osLaunch_fAsm, a
-	jp	nz, osLaunch.pass		; Asm( of RAM BASIC: stock OS
-	jp	osLaunch.pass			; RAM BASIC via prgmNAME
+	jp	z, osLaunch.go			; bare prgmNAME on a Z80 program: the OS cannot run it
+	jp	osLaunch.pass			; Asm(prgmNAME) of a RAM Z80 program: stock OS
 
 osLaunch.go:
 	ld	a, 1

@@ -20,8 +20,19 @@
 ;   3 PROGRAM_ICE      native ICE  -> load to userMem, jp
 ;   4 PROGRAM_ASMCALL  Z80 AsmPrgm -> temp prog Asm(prgmNAME), ParseInp
 ;
+;
+; FIXES (this revision):
+;  - native programs: the saved shell SP lives on the OS stack under the return address, not
+;    in app RAM (.bss). A program that scribbles in app RAM can no longer break the return.
+;  - the error handler is chosen (shell / OS) BEFORE the program runs, and the exit paths no
+;    longer read _os_launch_return_os_flag after the run.
+;  - error handlers do not call PopErrorHandler again (the OS already popped the handler).
+;  - the temporary program is _rodata_basicPrgmName (the one _asm_utils_deleteTempRunner
+;    deletes); it is deleted before it is created and again on exit (ZATRUN was leaked).
+;  - hex-text out-of-memory path no longer leaves 3 bytes on the stack.
 ;--------------------------------------
 	.assume	adl=1
+	.equ	DBG_STOP, 0		; set 1..4 to hang at that marker; 0 = off
 	.include	"src/asm/include/equates.inc"
 
 	.global	_asm_runProgram_run
@@ -32,6 +43,16 @@
 	.extern	_asm_utils_clrScrnAndUsedRAM
 	.extern	_asm_oslaunch_dispatch
 	.extern	_asm_oslaunch_returnOS
+	.extern	_flash_program_return_to_shell
+	.extern	_asm_utils_deleteTempRunner
+	.extern	_rodata_basicPrgmName
+	.extern	_asm_hooks_installStopHook
+	.extern	_asm_hooks_removeStopHook
+	.extern	_asm_hooks_installBasicKeyHook
+	.extern	_asm_hooks_removeBasicKeyHook
+	.extern	_asm_hooks_installAppChangeHook
+	.extern	_asm_hooks_removeAppChangeHook
+	.extern	_asm_hooks_basicPrgmHook
 	.extern	_os_launch_return_os_flag
 
 ;--------------------------------------
@@ -56,11 +77,13 @@ _asm_runProgram_run:
 	; sets it only when the OS homescreen hook intercepted the command).
 	ld	hl, _os_launch_return_os_flag
 	ld	(hl), 0
-	; release Flash App C stack before InsertMem / OS work
+	; Run the runner on the OS stack (like CEaShell and _flash_apps_launch do).
+	; The shell's own stack is a malloc'd block in the heap, and the runner's
+	; _asm_utils_clrScrnAndUsedRAM zeroes 25,200 bytes at ti.pixelShadow: with the
+	; stack in there, the zeroing wipes the return addresses we are about to pop
+	; (a ret to $000000 = crash at program start). Nothing returns to the shell
+	; stack anyway: every exit relaunches the app. All arguments were read above.
 	ld	sp, (ti.onSP)
-	push	af			; kind stays on OS stack
-	call	ti.ResetStacks
-	pop	af
 	ld	iy, ti.flags
 	jp	_asm_runProgram_main
 
@@ -160,14 +183,49 @@ main.ASMLoaded:
 	call	ti.DisableAPD
 	set	ti.appAutoScroll, (iy + ti.appFlags)
 	call	main.vectorsSetup
-	ld	hl, main.return
-	ld	a, (_os_launch_return_os_flag)
+	; A Flash App launch enters on atmOS's heap-backed stack, but native eZ80 programs expect the
+	; OS stack. If we are not already on it, move there and keep the old SP ON the new stack, right
+	; under the return address: a trampoline pops it again when the program returns. (It used to
+	; live in .bss, i.e. app RAM, where a program can overwrite it.)
+	ld	hl, (ti.onSP)
 	or	a, a
-	jr	z, main.native.returnReady
-	ld	hl, main.returnOS
-main.native.returnReady:
-	push	hl
+	sbc	hl, sp
+	ld	de, $2000
+	or	a, a
+	sbc	hl, de			; carry: (onSP - sp) < 8 KB, already on the OS stack
+	ld	a, (_os_launch_return_os_flag)	; (ld a,(nn) leaves the flags alone)
+	jr	c, main.native.sameStack
+	ld	bc, main.native.retShellSw
+	or	a, a
+	jr	z, main.native.switch
+	ld	bc, main.native.retOSSw
+main.native.switch:
+	ld	hl, 0
+	add	hl, sp
+	ld	sp, (ti.onSP)
+	push	hl			; the shell's SP
+	push	bc			; return address for the program
 	jp	ti.userMem
+main.native.sameStack:
+	ld	bc, main.native.retShell
+	or	a, a
+	jr	z, main.native.go
+	ld	bc, main.native.retOS
+main.native.go:
+	push	bc
+	jp	ti.userMem
+
+; Return trampolines (the program's RET lands here).
+main.native.retShellSw:
+	pop	hl
+	ld	sp, hl			; back on the shell's stack
+main.native.retShell:
+	jp	main.return
+main.native.retOSSw:
+	pop	hl
+	ld	sp, hl
+main.native.retOS:
+	jp	main.returnOS
 
 ; Z80-mode: build Asm(prgmNAME) as a temporary protected program, ParseInp it.
 main.runAsmCall:
@@ -202,7 +260,8 @@ main.asmCall.nameDone:
 	ld	a, ti.E_Memory
 	jp	c, main.error
 	push	hl
-	ld	hl, main.tempName
+	call	_asm_utils_deleteTempRunner	; a stale copy would shadow the new one
+	ld	hl, _rodata_basicPrgmName
 	call	ti.Mov9ToOP1
 	pop	hl
 	push	hl
@@ -229,11 +288,11 @@ main.runBasic:
 	inc	de
 	ld	a, (de)
 	cp	a, ti.tAsm84CePrgm
-	jr	z, main.squish
+	jp	z, main.squish
 	dec	de
 main.noSquish:
 	call	ti.ChkInRam
-	jr	z, main.loadComplete.ready
+	jp	z, main.loadComplete.ready
 	; archived: copy to a temp prot program
 	push	de
 	push	bc
@@ -246,7 +305,8 @@ main.noSquish:
 	ld	a, ti.E_Memory
 	jp	main.error
 main.arcOk:
-	ld	hl, main.tempName
+	call	_asm_utils_deleteTempRunner	; (size and source are on the stack)
+	ld	hl, _rodata_basicPrgmName
 	call	ti.Mov9ToOP1
 	pop	hl			; size
 	push	hl
@@ -267,15 +327,35 @@ main.loadComplete.ready:
 	set	ti.progExecuting, (iy + ti.newDispF)
 	set	ti.cmdExec, (iy + ti.cmdFlags)
 	call	main.vectorsSetup
+	call	_asm_hooks_installStopHook
+	call	_asm_hooks_installBasicKeyHook
+	ld	de, _asm_hooks_basicPrgmHook
+	call	_asm_hooks_installAppChangeHook
 	ei
-	ld	hl, main.return
+	ld	hl, main.basic.return
 	ld	a, (_os_launch_return_os_flag)
 	or	a, a
 	jr	z, main.basic.returnReady
-	ld	hl, main.returnOS
+	ld	hl, main.basic.returnOS
 main.basic.returnReady:
 	push	hl
 	jp	ti.ParseInp
+
+main.basic.return:
+	call	main.removeBasicHooks
+	jp	main.return
+
+main.basic.returnOS:
+	call	main.removeBasicHooks
+	jp	main.returnOS
+
+main.removeBasicHooks:
+	ld	iy, ti.flags
+	call	_asm_hooks_removeStopHook
+	call	_asm_hooks_removeBasicKeyHook
+	ld	de, _asm_hooks_basicPrgmHook
+	call	_asm_hooks_removeAppChangeHook
+	ret
 
 ; Hex-text Asm84CEPrgm: convert ASCII hex to bytes, run as native
 main.squish:
@@ -322,8 +402,11 @@ main.notEmpty:
 	add	hl, de
 	call	ti.EnoughMem
 	pop	hl
+	jr	nc, main.squishMemOk
+	pop	bc			; drop the saved stream size: the stack must be balanced for the OS return
 	ld	a, ti.E_Memory
-	jp	c, main.error
+	jp	main.error
+main.squishMemOk:
 	ld	(ti.asm_prgm_size), hl
 	push	hl
 	ld	de, ti.userMem
@@ -402,21 +485,51 @@ main.errWait:
 	jr	main.errWait
 
 ;---------- return from program ----------
+; Each exit knows its destination by its label, chosen before the program ran. None of them
+; reads _os_launch_return_os_flag: it lives in app RAM, which the program (or the cleanup) may
+; have changed.
 main.return:
+	.if DBG_STOP == 1
+	jr	$		; DEBUG marker 1
+	.endif
 	call	main.returnCleanup
-	jp	_asm_oslaunch_dispatch
+	.if DBG_STOP == 2
+	jr	$		; DEBUG marker 2
+	.endif
+	jp	_flash_program_return_to_shell	; shell launch: restart the shell
 
-; The OS-launch callback is selected before the program runs. Cleanup can
-; clear app RAM, so the return path must not depend on the launch flag here.
 main.returnOS:
 	call	main.returnCleanup
+	jp	_asm_oslaunch_returnOS		; OS launch: back to the homescreen
+
+; Error handlers. The OS has ALREADY popped the handler when it jumps here, so these must not
+; go through PopErrorHandler again (that corrupted the handler chain).
+main.errShell:
+	call	main.removeBasicHooks
+	call	main.returnCleanupErr
+	jp	_flash_program_return_to_shell
+main.errOS:
+	call	main.removeBasicHooks
+	call	main.returnCleanupErr
 	jp	_asm_oslaunch_returnOS
 
 main.returnCleanup:
 	ld	iy, ti.flags
 	ei
-	call	ti.PopErrorHandler
+	; Do not PopErrorHandler here. Some native programs quit by
+	; triggering the OS error system (which already pops the handler
+	; before jumping to our registered handler). A second Pop then
+	; corrupts state and can produce the CEmu "write to bit 4 of port 0"
+	; reset. The error-handler path already skips the Pop; normal RET
+	; programs leave the handler, but the subsequent app relaunch
+	; (flash_apps_launch / NewContext0) clears it.
+	jr	main.cleanupCommon
+main.returnCleanupErr:
+	ld	iy, ti.flags
+	ei
+main.cleanupCommon:
 	xor	a, a
+	ld	(ti.errNo), a			; prevent residual error from being shown after exit
 	ld	hl, ti.mpTmrCtrl + 1
 	ld	a, (hl)
 	and	a, l
@@ -427,6 +540,7 @@ main.returnCleanup:
 	res	ti.onInterrupt, (iy + ti.onFlags)
 	call	ti.ReloadAppEntryVecs
 	call	ti.DeleteTempPrograms
+	call	_asm_utils_deleteTempRunner	; the Asm( / archived-BASIC copy
 	call	ti.CleanAll
 	call	ti.ReloadAppEntryVecs
 	call	ti.ForceFullScreen
@@ -457,7 +571,13 @@ main.vectorsSetup:
 	ld	hl, main.vectors
 	call	ti.AppInit
 	call	_asm_utils_clrScrnAndUsedRAM
-	ld	hl, main.return
+	; Pick the error handler NOW (shell vs OS launch), while the flag is still intact.
+	ld	hl, main.errShell
+	ld	a, (_os_launch_return_os_flag)
+	or	a, a
+	jr	z, main.vectorsSetup.push
+	ld	hl, main.errOS
+main.vectorsSetup.push:
 	jp	ti.PushErrorHandler
 
 main.vectors:
@@ -486,8 +606,3 @@ main.vecRestore:
 main.lcdNormal:
 	; minimal: ensure 8bpp is left for the shell to re-init
 	ret
-
-; Temporary protected program name used for Asm( and archived BASIC copies
-	.section	.rodata
-main.tempName:
-	.db	ti.ProgObj, "ZATRUN", 0, 0
