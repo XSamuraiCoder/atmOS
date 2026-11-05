@@ -19,7 +19,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && 'write' || 'read' }}
 
     steps:
       - name: Check out
@@ -37,7 +37,7 @@ jobs:
         id: cedev-cache
         uses: actions/cache@v4
         with:
-          path: ~/CEdev
+          path: /home/runner/CEdev
           key: cedev-${{ env.CEDEV_VERSION }}-linux
 
       - name: Install the toolchain
@@ -70,19 +70,15 @@ jobs:
           cefont --help
 
       - name: Remove stale build output
-        run: rm -rf obj bin installer/obj installer/bin halloween-theme/obj halloween-theme/bin
+        run: rm -rf obj bin installer/obj installer/bin
 
       - name: Normalize line endings
         run: |
-          find . -type f \( \
-            -name 'Makefile' -o \
-            -name '*.mk' -o \
-            -name '*.s' -o \
-            -name '*.S' -o \
-            -name '*.ld' -o \
-            -name '*.yaml' \
-          \) -not -path './.git/*' \
-            -exec sed -i -e 's/\r$//' -e '$a\' {} +
+          find . -type f \
+            \( -name 'Makefile' -o -name '*.mk' -o -name '*.s' -o \
+               -name '*.S' -o -name '*.ld' -o -name '*.yaml' \) \
+            -not -path './.git/*' \
+            -exec sed -i 's/\r$//' {} +
 
       - name: Download font sources
         run: |
@@ -98,7 +94,7 @@ jobs:
               -o "fonts/${filename}.css"
 
             local url
-            url="$(grep -oE 'https://fonts\.gstatic\.com/[^)]+' \
+            url="$(grep -oE 'https://fonts.gstatic.com/[^)]+' \
               "fonts/${filename}.css" | head -n 1)"
 
             if [ -z "$url" ]; then
@@ -111,7 +107,7 @@ jobs:
 
           download_font "Open+Sans" "sans-serif"
           download_font "Fredoka" "fredoka"
-          download_font "BenchNine" "benchmark"
+          download_font "SpaceGrotesk" "benchmark"
           download_font "Bungee" "bungee"
 
           python - <<'PY'
@@ -152,22 +148,6 @@ jobs:
       - name: Build app, installer, and libraries
         run: make package
 
-      - name: Build the Halloween theme mod
-        run: |
-          make -C halloween-theme
-
-          file="$(find halloween-theme -type f -iname 'SPOOKY.8xv' -print -quit)"
-
-          if [ -z "$file" ]; then
-            echo "Missing built mod AppVar: SPOOKY.8xv" >&2
-            exit 1
-          fi
-
-          mkdir -p "dist/Halloween Theme"
-          cp "$file" "dist/Halloween Theme/SPOOKY.8xv"
-
-          ls -lh "dist/Halloween Theme/"
-
       - name: Collect build outputs
         run: |
           cp bin/atmOS.*.8xv dist/
@@ -175,7 +155,6 @@ jobs:
 
           ls -lh dist/
           ls -lh "dist/extra fonts/"
-          ls -lh "dist/Halloween Theme/"
 
       - name: Create ZIP
         run: |
