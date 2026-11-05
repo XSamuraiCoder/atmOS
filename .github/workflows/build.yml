@@ -102,7 +102,7 @@ jobs:
 
           download_font "Open+Sans" "sans-serif" ":wght@400;700"
           download_font "Fredoka" "fredoka" ":wght@400;700"
-          download_font "SpaceGrotesk" "space-grotesk" ":wght@400;700"
+          download_font "Space+Grotesk" "space-grotesk" ":wght@400;700"
           download_font "Bungee" "bungee" ""
 
           python - <<'PY'
