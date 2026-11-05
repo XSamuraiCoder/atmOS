@@ -27,12 +27,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Check out the Halloween theme mod
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/halloween-theme
-          path: halloween-theme
-
       - name: Cache the toolchain
         id: cedev-cache
         uses: actions/cache@v4
@@ -107,7 +101,7 @@ jobs:
 
           download_font "Open+Sans" "sans-serif"
           download_font "Fredoka" "fredoka"
-          download_font "SpaceGrotesk" "benchmark"
+          download_font "SpaceGrotesk" "space-grotesk"
           download_font "Bungee" "bungee"
 
           python - <<'PY'
@@ -128,7 +122,7 @@ jobs:
 
           cefont build fonts/sans-serif.ttf --name SANSERIF --size 12
           cefont build fonts/fredoka.ttf --name FREDOKA --size 12
-          cefont build fonts/benchmark.ttf --name BENCHMAR --size 16
+          cefont build fonts/space-grotesk.ttf --name BENCHMAR --size 16
           cefont build fonts/bungee.ttf --name BUNGEE --size 12
 
           for name in SANSERIF FREDOKA BENCHMAR BUNGEE; do
