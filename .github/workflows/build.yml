@@ -123,10 +123,10 @@ jobs:
 
           cefont build fonts/sans-serif.ttf --name SANSERIF --size 12
           cefont build fonts/fredoka.ttf --name FREDOKA --size 12
-          cefont build fonts/space-grotesk.ttf --name BENCHMAR --size 16
+          cefont build fonts/space-grotesk.ttf --name GROTESK --size 16
           cefont build fonts/bungee.ttf --name BUNGEE --size 12
 
-          for name in SANSERIF FREDOKA BENCHMAR BUNGEE; do
+          for name in SANSERIF FREDOKA GROTESK BUNGEE; do
             file="$(find . -maxdepth 1 -type f \
               -iname "${name}.8xv" -print -quit)"
 
