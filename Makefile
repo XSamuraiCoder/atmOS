@@ -33,6 +33,16 @@ CFLAGS   += -DSHELL_DEBUG_STACK
 CXXFLAGS += -DSHELL_DEBUG_STACK
 endif
 
+# make DEBUG_SIZEMENU=1 builds the PRGM-menu size debug version: osSizeMenu.s prints 9 characters
+# (one per menu row: B = both test pixels black, t = top only, b = bottom only, . = neither) at
+# the top right of the screen. It is passed to the assembler as the symbol OSSIZEMENU_DEBUG.
+# If your CEdev makefile does not use ASFLAGS for .s files the symbol never arrives: then edit
+# the ".set OSSIZEMENU_DEBUG, 0" line at the top of src/asm/osSizeMenu.s to 1 by hand.
+ifeq ($(DEBUG_SIZEMENU),1)
+ASFLAGS       += --defsym OSSIZEMENU_DEBUG=1
+EXTRA_ASFLAGS += --defsym OSSIZEMENU_DEBUG=1
+endif
+
 APPVAR_PREFIX = ATMOS
 APPVAR_SPLIT_SIZE = 65200
 CLIBS_VERSION = v15.0
