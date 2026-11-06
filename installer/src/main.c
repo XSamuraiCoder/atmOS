@@ -616,46 +616,71 @@ static void draw_panel(int x, int y, int w, int h)
     gfx_Rectangle(x, y, w, h);
 }
 
-static void draw_button(int x, int y, int w, int h, const char *label, bool selected)
+/* ---------- text: every string goes through here so it follows the SHLSET font ---------- */
+static fontlib_font_t *cur_font(void)
 {
-    gfx_SetColor(selected ? PAL_ACCENT : PAL_DOCK);
-    fill_round(x, y, w, h, 8);
-    gfx_SetTextFGColor(selected ? PAL_LABEL : PAL_TEXT);
-    gfx_SetTextBGColor(255);
-    gfx_SetTextTransparentColor(255);
-    int tw = gfx_GetStringWidth(label);
-    gfx_PrintStringXY(label, x + (w - tw) / 2, y + (h - 8) / 2);
+    static fontlib_font_t *f;
+    static int sel = -1;
+
+    if (sel != pf.font_sel) {           /* re-resolve only when the choice changes */
+        sel = pf.font_sel;
+        f = NULL;
+        if (sel)
+            f = fontlib_GetFontByIndex(custom[sel - 1].var, custom[sel - 1].index);
+    }
+    return f;
 }
 
-static void center_text(const char *s, int y, uint8_t color)
+/* true = fontlib is set up with the custom font; false = use GraphX's default font */
+static bool font_begin(uint8_t color)
 {
-    gfx_SetTextFGColor(color);
-    gfx_SetTextBGColor(255);
-    gfx_SetTextTransparentColor(255);
-    int tw = gfx_GetStringWidth(s);
-    gfx_PrintStringXY(s, (GFX_LCD_WIDTH - tw) / 2, y);
-}
+    fontlib_font_t *f = cur_font();
 
-/* Preview line in the chosen font (fontlib), set up the way the shell's ui_text.c does it. */
-static void preview_font(const char *s, int y)
-{
-    if (pf.font_sel == 0) {
-        center_text(s, y, PAL_TEXT);
-        return;
-    }
-    fontlib_font_t *f = fontlib_GetFontByIndex(custom[pf.font_sel - 1].var,
-                                               custom[pf.font_sel - 1].index);
-    if (!f || !fontlib_SetFont(f, 0)) {
-        center_text(s, y, PAL_TEXT);
-        return;
-    }
+    if (!f || !fontlib_SetFont(f, 0)) return false;
     fontlib_SetLineSpacing(0, 0);
     fontlib_SetTransparency(true);
     fontlib_SetNewlineOptions(0);
     fontlib_SetWindowFullScreen();
-    fontlib_SetColors(PAL_TEXT, 255);
-    fontlib_SetCursorPosition((GFX_LCD_WIDTH - fontlib_GetStringWidth(s)) / 2, y);
-    fontlib_DrawString(s);
+    fontlib_SetColors(color, 255);
+    return true;
+}
+
+static int text_width(const char *s)
+{
+    if (font_begin(PAL_TEXT)) return (int)fontlib_GetStringWidth(s);
+    return gfx_GetStringWidth(s);
+}
+
+static int text_height(void)
+{
+    if (font_begin(PAL_TEXT)) return (int)fontlib_GetCurrentFontHeight();
+    return 8;
+}
+
+static void text_xy(const char *s, int x, int y, uint8_t color)
+{
+    if (font_begin(color)) {
+        fontlib_SetCursorPosition(x, y);
+        fontlib_DrawString(s);
+        return;
+    }
+    gfx_SetTextFGColor(color);
+    gfx_SetTextBGColor(255);
+    gfx_SetTextTransparentColor(255);
+    gfx_PrintStringXY(s, x, y);
+}
+
+static void center_text(const char *s, int y, uint8_t color)
+{
+    text_xy(s, (GFX_LCD_WIDTH - text_width(s)) / 2, y, color);
+}
+
+static void draw_button(int x, int y, int w, int h, const char *label, bool selected)
+{
+    gfx_SetColor(selected ? PAL_ACCENT : PAL_DOCK);
+    fill_round(x, y, w, h, 8);
+    text_xy(label, x + (w - text_width(label)) / 2, y + (h - text_height()) / 2,
+            selected ? PAL_LABEL : PAL_TEXT);
 }
 
 /* ---------- install ---------- */
@@ -804,10 +829,9 @@ static int screen_welcome(void)
             draw_panel(16, 30, 288, 180);
             center_text("atmOS Installer", 50, PAL_TEXT);
             center_text("First-time setup", 70, PAL_GRAY);
-            gfx_SetTextFGColor(PAL_TEXT);
-            gfx_PrintStringXY("This will install the atmOS", 40, 100);
-            gfx_PrintStringXY("shell on your", 40, 114);
-            gfx_PrintStringXY("TI-84 Plus CE.", 40, 128);
+            text_xy("This will install the atmOS", 40, 100, PAL_TEXT);
+            text_xy("shell on your",               40, 114, PAL_TEXT);
+            text_xy("TI-84 Plus CE.",              40, 128, PAL_TEXT);
             draw_button(60, 160, 90, 28, "Cancel", sel == 0);
             draw_button(170, 160, 90, 28, "Continue", sel == 1);
             center_text("Arrows = choose   Enter = OK", 200, PAL_GRAY);
@@ -903,7 +927,7 @@ static int screen_customize(void)
                 row_text(r, text);
                 draw_button(40, 36 + i * 24, 240, 22, text, sel == r);
             }
-            preview_font("Aa Bb 123 atmOS", 186);
+            center_text("Aa Bb 123 atmOS", 186, PAL_TEXT);
             center_text("Up/Down move  Left/Right change", 214, PAL_GRAY);
             gfx_SwapDraw();
             dirty = false;
