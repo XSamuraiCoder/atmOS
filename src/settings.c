@@ -167,7 +167,7 @@ int settings_register_theme(const char *name, const settings_theme_t *theme)
 
 /* ---------- widgets ---------- */
 enum {
-    W_TAB0, W_TAB1, W_TAB2,
+    W_TAB0, W_TAB1, W_TAB2, W_TAB3,
     W_THEME, W_WALL, W_ACCENT, W_FONT,              /* Look */
     W_BAR, W_DOCK,                                  /* Taskbar dropdowns */
     W_BATT_ON, W_BATT_OFF, W_TIPS_ON, W_TIPS_OFF,   /* Taskbar buttons */
@@ -176,13 +176,14 @@ enum {
     W_COUNT
 };
 #define TAB_ALL (-1)
-#define TAB_COUNT 3
+#define TAB_COUNT 4
 #define IS_DROP(id) ((id) >= W_THEME && (id) <= W_DOCK)
 
 typedef struct { int8_t tab; int16_t x, y, w, h; } widget_t;
 
 static const widget_t wd[W_COUNT] = {
-    { TAB_ALL,   6, 4, 96, 18 }, { TAB_ALL, 107, 4, 96, 18 }, { TAB_ALL, 208, 4, 90, 18 },
+    { TAB_ALL,   6, 4, 70, 18 }, { TAB_ALL,  79, 4, 70, 18 },
+    { TAB_ALL, 152, 4, 70, 18 }, { TAB_ALL, 225, 4, 70, 18 },
     { 0,   6, 41, 142, 18 }, { 0, 156, 41, 142, 18 },
     { 0,   6, 83, 142, 18 }, { 0, 156, 83, 142, 18 },
     { 1,   6, 41, 142, 18 }, { 1, 156, 41, 142, 18 },
@@ -199,7 +200,14 @@ static const struct { int8_t tab; int16_t x, y; const char *s; } labels[] = {
     { 1,   6, 30, "Menu bar color" }, { 1, 156, 30, "Dock color" },
     { 1,   6, 72, "Battery indicator" }, { 1, 156, 72, "Dock labels" },
     { 2,   6, 30, "Pointer speed" },  { 2,   6, 72, "Clock" },
-    { 2,   6, 114, "Reset" },         { 2, 156, 114, "Keyboard focus" }
+    { 2,   6, 114, "Reset" },         { 2, 156, 114, "Keyboard focus" },
+    { 3,   6, 32, "atmOS for TI-84 Plus CE" },
+    { 3,   6, 52, "Created by XSamurai" },
+    { 3,   6, 64, "Settings saved automatically" },
+    { 3,   6, 78, "Thanks to" },
+    { 3,  14, 92, "CE Programming - toolchain & libs" },
+    { 3,  14, 104, "CEmu team - testing" },
+    { 3,  14, 116, "WikiTI - OS documentation" }
 };
 
 static int tab;                         /* current tab */
@@ -579,7 +587,7 @@ static int drop_swatch(int id, int i)
 static const char *btn_label(int id)
 {
     static const char *const names[W_COUNT] = {
-        "Look", "Taskbar", "System", 0, 0, 0, 0, 0, 0,
+        "Look", "Taskbar", "System", "Credits", 0, 0, 0, 0, 0, 0,
         "Show", "Hide", "On", "Off",
         "Slow", "Normal", "Fast", "24-hour", "12-hour", "Reset all",
         "On", "Off"
@@ -590,7 +598,7 @@ static const char *btn_label(int id)
 static bool btn_sel(const prefs_t *p, int id)
 {
     switch (id) {
-    case W_TAB0: case W_TAB1: case W_TAB2: return tab == id - W_TAB0;
+    case W_TAB0: case W_TAB1: case W_TAB2: case W_TAB3: return tab == id - W_TAB0;
     case W_BATT_ON:  return p->battery != 0;
     case W_BATT_OFF: return p->battery == 0;
     case W_TIPS_ON:  return p->tips != 0;
@@ -890,11 +898,6 @@ void settings_draw_region(int x, int y, int x0, int y0, int x1, int y1)
         draw_look_preview(x, y);
     if (tab == 1 && touches(x0, y0, x1, y1, x + 6, y + 120, x + 298, y + 172))
         draw_taskbar_preview(x, y);
-    if (tab == 2 && touches(x0, y0, x1, y1, x + 156, y + 126, x + 298, y + 160)) {
-        text_color(PAL_TEXT);
-        ui_print("atmOS for TI-84 Plus CE", x + 156, y + 127);
-        ui_print("Saved automatically", x + 156, y + 141);
-    }
 
     if (touches(x0, y0, x1, y1, x, y + CONTENT_H - 10, x + WIN_W, y + CONTENT_H - 2) &&
         open_drop < 0) {
@@ -1053,7 +1056,7 @@ void settings_click(int x, int y)
     id = widget_at(x, y);
     if (id < 0) return;
 
-    if (id <= W_TAB2) {
+    if (id <= W_TAB3) {
         if (tab != id - W_TAB0) {
             tab = id - W_TAB0;
             hover = -1;
@@ -1201,7 +1204,7 @@ bool settings_focus_press(void)
         int id = hover;
         settings_click(wd[id].x + wd[id].w / 2,
                        wd[id].y + wd[id].h / 2);
-        if (id <= W_TAB2) {
+        if (id <= W_TAB3) {
             hover = id;
             mark_widget(hover);
         }

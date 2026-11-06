@@ -44,6 +44,7 @@
 #define STORE_VERSION  4
 #define STORE_SIZE     22
 #define STORE_SIZE_V2  11
+#define STORE_SIZE_V3  21
 
 /* same limits as settings.c */
 #define THEME_COUNT        6
@@ -137,7 +138,8 @@ static struct {
     uint8_t theme, wall, accent, bar, dock;
     uint8_t speed, clock24, battery, tips;
     uint8_t font_sel;                   /* 0 = Default, n = custom[n - 1] */
-} pf = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 0 };
+    uint8_t focus;                      /* keyboard focus navigation (SHLSET byte 21) */
+} pf = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0 };
 
 /* ---------- custom fonts: every AppVar starting with "FONTPACK" (as in the shell) ---------- */
 typedef struct {
@@ -452,7 +454,12 @@ static bool sane(const uint8_t *b)
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
 
-/* True when a valid SHLSET already exists (= first-time setup was done before). */
+/* Loads a valid SHLSET into pf (= first-time setup was done before). The installer then
+ * FOLLOWS those settings: apply_theme() paints its screens with the user's theme, and the
+ * custom font choice resolves against the pack list. SHLSET itself is never rewritten.
+ * Call scan_font_packs() and scan_mod_themes() first: a saved custom font is matched
+ * against the pack list, and a saved theme index may point at a mod theme.
+ * Same decoding rules as the shell's settings.c load_prefs(). */
 static bool load_prefs(void)
 {
     uint8_t buf[STORE_SIZE];
@@ -462,8 +469,40 @@ static bool load_prefs(void)
     if (!h) return false;
     n = ti_Read(buf, 1, STORE_SIZE, h);
     ti_Close(h);
-    return n >= STORE_SIZE_V2 &&
-           (buf[0] == 2 || buf[0] == 3 || buf[0] == STORE_VERSION) && sane(buf);
+    if (n >= STORE_SIZE_V2 &&
+        (buf[0] == 2 || buf[0] == 3 || buf[0] == STORE_VERSION) && sane(buf)) {
+
+        pf.theme   = buf[1];  pf.wall   = buf[2];  pf.accent = buf[3];
+        pf.bar     = buf[5];  pf.dock   = buf[6];
+        pf.speed   = buf[7];  pf.clock24 = buf[8];
+        pf.battery = buf[9];  pf.tips   = buf[10];
+        if (buf[0] >= 3 && n >= STORE_SIZE_V3 && buf[4] == FONT_CUSTOM) {
+            char var[9];
+            uint8_t k;
+
+            memcpy(var, buf + 11, 8);
+            var[8] = 0;
+            for (k = 0; k < custom_count; k++)             /* pack gone = back to Default */
+                if (custom[k].index == buf[20] && strcmp(custom[k].var, var) == 0) {
+                    pf.font_sel = (uint8_t)(k + 1);
+                    break;
+                }
+        }
+        if (buf[0] == STORE_VERSION && n == STORE_SIZE && buf[21] < 2)
+            pf.focus = buf[21];
+        return true;
+    }
+
+    /* Old format (as settings.c load_prefs()): theme, speed, clock24 only. Still
+     * counts as "setup done": follow it instead of running first-time setup. */
+    if (n >= 4 && buf[0] == 1 &&
+        buf[1] < THEME_COUNT && buf[2] < 3 && buf[3] < 2) {
+        pf.theme  = buf[1];
+        pf.speed  = buf[2];
+        pf.clock24 = buf[3];
+        return true;
+    }
+    return false;
 }
 
 static void save_prefs(void)
@@ -482,7 +521,7 @@ static void save_prefs(void)
         memcpy(buf + 11, custom[pf.font_sel - 1].var, 8);
         buf[20] = custom[pf.font_sel - 1].index;
     }
-    buf[21] = 0;
+    buf[21] = pf.focus;
     h = ti_Open(STORE_NAME, "w");
     if (!h) return;
     ti_Write(buf, 1, STORE_SIZE, h);
@@ -790,7 +829,7 @@ static int screen_welcome(void)
 enum {
     R_THEME, R_WALL, R_ACCENT, R_FONT,          /* Look */
     R_BAR, R_DOCK, R_BATT, R_TIPS,              /* Taskbar */
-    R_SPEED, R_CLOCK,                           /* System */
+    R_SPEED, R_CLOCK, R_FOCUS,                  /* System */
     R_CONTINUE,
     R_COUNT
 };
@@ -814,6 +853,7 @@ static void row_text(int r, char *out)
         case R_TIPS:   sprintf(out, "Dock labels: %s", pf.tips ? "On" : "Off"); break;
         case R_SPEED:  sprintf(out, "Pointer speed: %s", speed_names[pf.speed]); break;
         case R_CLOCK:  sprintf(out, "Clock: %s", pf.clock24 ? "24-hour" : "12-hour"); break;
+        case R_FOCUS:  sprintf(out, "Keyboard focus: %s", pf.focus ? "On" : "Off"); break;
         default:       strcpy(out, "Continue"); break;
     }
 }
@@ -836,6 +876,7 @@ static void row_change(int r, int d)
         case R_TIPS:   pf.tips     = cycle(pf.tips,   2, d);                break;
         case R_SPEED:  pf.speed    = cycle(pf.speed,  3, d);                break;
         case R_CLOCK:  pf.clock24  = cycle(pf.clock24, 2, d);               break;
+        case R_FOCUS:  pf.focus    = cycle(pf.focus,   2, d);               break;
         default: break;
     }
 }
@@ -965,29 +1006,33 @@ int main(int argc, char **argv)
     bool delete_after = true;
     int error = SUCCESS;
 
-    /* fileioc BEFORE graphics: look for existing settings, find font packs */
-    bool setup_done = load_prefs();
-    if (!setup_done) {
-        scan_font_packs();
-        scan_mod_themes();          /* themes registered by installed mods */
-    }
+    /* fileioc BEFORE graphics: font packs first (load_prefs matches a saved custom font
+     * against the pack list), then existing settings, then mod themes. */
+    scan_font_packs();
+    scan_mod_themes();                  /* BEFORE load_prefs: a saved theme may point at a
+                                           mod-registered theme, as in settings.c */
+    bool setup_done = load_prefs();     /* valid SHLSET: the installer follows it */
 
     gfx_Begin();
-    apply_theme();
+    apply_theme();                      /* follows SHLSET when it exists */
     gfx_SetDrawBuffer();
 
-    /* First-time setup only when no valid SHLSET exists yet; afterwards the
-     * user changes everything in the shell's own Settings app. */
+    /* First-time setup only when no valid SHLSET exists yet. When it exists, the
+     * installer FOLLOWS those settings (its screens show the user's theme and font)
+     * and never modifies SHLSET: changes belong in the shell's Settings app. */
     if (!setup_done) {
         if (screen_welcome() != SUCCESS)   { error = USER_ABORT; goto end_gfx; }
         if (screen_customize() != SUCCESS) { error = USER_ABORT; goto end_gfx; }
     }
+    /* Keep/Delete choice in both paths: first-time setup and updating an
+     * existing install (a valid SHLSET already exists). */
     if (screen_options(&delete_after) != SUCCESS) { error = USER_ABORT; goto end_gfx; }
 
 end_gfx:
     gfx_End();
 
-    /* fileioc AFTER graphics. Never overwrite settings the user already has. */
+    /* fileioc AFTER graphics. Only a fresh setup writes SHLSET; an existing one is
+     * never modified. */
     if (error == SUCCESS && !setup_done)
         save_prefs();
 
