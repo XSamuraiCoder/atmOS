@@ -4,18 +4,12 @@
 ; Shows size of the currently selected program in PRGM EXEC,
 ; and app sizes in the Apps menu.
 ;
-; CHANGES vs the broken version:
-;   1. osSizeMenu_walkTo now walks apps with ti.FindAppUp (name in OP1, carry = no more),
-;      instead of ti.FindAppCustom with A = $0D (unknown convention).
-;   2. The name-to-header lookup now uses ti.FindAppStart (HL = name pointer in,
-;      HL = app header start in flash out), instead of ti.FindApp with OP1 (guessed).
-;   3. osSizeMenu_hdrLen adds 269 to the 4-byte big-endian master field value, not 6:
-;      total app size = master value + 269 (6 master + 4 signature field + 256 signature
-;      + 3 size bytes), per WikiTI 84PCE:OS:Applications.
-;   4. osSizeMenu_appSize bails out (carry, bc = 0) when the header check fails instead
-;      of silently formatting hl = 0 as "0KB".
-; STILL TO VERIFY: the Apps-menu row geometry assumed by osSizeMenu_hoverRow (first row y,
-;   pitch, row count) and that menu row r = r-th app of the FindAppUp walk.
+; APPS MENU LOOKUP: the hovered app is named by ti.progCurrent ($14 + name, empty name on
+; Finance..., which is an OS menu entry and not a flash app). ti.FindAppStart turns that name
+; into the header, the same pair the OS uses itself (OS 5.8.5, $24325). Never map a menu row to
+; an app by walking with ti.FindAppUp: the OS builds this menu with FindAppCustom A = $0D
+; (case-insensitive, filtered), while FindAppUp is case-sensitive and unfiltered, so the two
+; orders differ, and a row number also stops naming an app once the list scrolls.
 ;
 ;--------------------------------------
 	.assume	adl=1
@@ -142,10 +136,8 @@ osSizeMenu_pass:
 	ret
 
 ; ---- Apps menu: size of the HOVERED app only (same scheme as the PRGM EXEC menu) ----
-; The hovered row is read off the screen (osSizeMenu_hoverRow); the app on that row is the
-; row-th entry of the FindAppUp walk (the first app is assumed to be the first visible one,
-; i.e. the list is not scrolled). Same slot (x = 152), same padding / blanking / pen+color
-; restore as EXEC.
+; The hovered row is read off the screen (osSizeMenu_hoverRow) and only says WHERE to paint.
+; WHICH app is hovered comes from ti.progCurrent (see the note at the top of this file).
 ; Scratch: buf + 13 = hovered row, buf + 15 = last painted row + 1.
 osSizeMenu_drawSelectedApp:
 	.if OSSIZEMENU_DEBUG
@@ -161,36 +153,25 @@ osSizeMenu_drawSelectedApp:
 	jp	osSizeMenu_noSel
 osSizeMenu_appHoverOk:
 	ld	(_os_size_menu_buf + 13), a
-	call	osSizeMenu_blankRows		; a = hovered row (clobbers _os_size_menu_vat: do it first)
-	; Row 0 ("Finance...") is deliberately left blank. The first app in flash is what the
-	; FindAppUp walk returns first, so walk index = menu row.
-	ld	a, (_os_size_menu_buf + 13)
+	ld	hl, ti.progCurrent + 1		; hovered app's name
+	ld	a, (hl)
 	or	a, a
-	jr	nz, osSizeMenu_appNotFirst
-	ld	(_os_size_menu_buf + 15), a	; a = 0: nothing painted
-	ret
-osSizeMenu_appNotFirst:
-	; Row r (r >= 1) is the r-th app of the FindAppUp walk. FindAppUp leaves each name in
-	; OP1; FindAppStart then turns the name pointer into the app header pointer.
-	ld	a, (_os_size_menu_buf + 13)
-	call	osSizeMenu_walkTo		; OP1 = the hovered app's name, carry = ran out
-	jr	nc, osSizeMenu_appNameOk
-	.if OSSIZEMENU_DEBUG
-	ld	a, 'Z'				; trace: fewer apps than the hovered row
-	call	osSizeMenu_dbgTrace
-	.endif
-	jp	osSizeMenu_noSel
-osSizeMenu_appNameOk:
-	ld	hl, ti.OP1+1			; HL -> name (as ti.FindAppStart expects)
-	call	ti.FindAppStart		; HL = app header start in flash, carry = not found
+	jp	z, osSizeMenu_noSel		; empty name: Finance..., not a flash app
+	push	iy
+	call	ti.FindAppStart			; hl = app header in flash, carry = not found
+	pop	iy
 	jr	nc, osSizeMenu_appFound
 	.if OSSIZEMENU_DEBUG
-	ld	a, 'F'				; trace: FindAppStart failed on a walked name
+	ld	a, 'F'				; trace: FindAppStart failed on the hovered name
 	call	osSizeMenu_dbgTrace
 	.endif
 	jp	osSizeMenu_noSel
 osSizeMenu_appFound:
-	ld	(_os_size_menu_vat), hl
+	push	hl
+	ld	a, (_os_size_menu_buf + 13)
+	call	osSizeMenu_blankRows		; a = hovered row (clobbers _os_size_menu_vat: do it first)
+	pop	hl
+	ld	(_os_size_menu_vat), hl		; header pointer for osSizeMenu_appSize
 	ld	a, (_os_size_menu_buf + 13)
 	ld	(_os_size_menu_row), a
 osSizeMenu_appSelSize:
@@ -217,29 +198,6 @@ osSizeMenu_appPaint:
 	ld	a, (_os_size_menu_row)
 	inc	a
 	ld	(_os_size_menu_buf + 15), a
-	ret
-
-; a = n (>= 1): leaves the n-th app of the OS app walk in OP1 (type $14 + name); carry set when
-; there are fewer than n apps. FindAppUp takes the previous name in OP1 and returns the next
-; app's name in OP1 (carry = no more apps); a zeroed name yields the first app.
-osSizeMenu_walkTo:
-	ld	(_os_size_menu_begun), a
-	ld	hl, ti.OP1
-	ld	b, 11
-	xor	a, a
-osSizeMenu_walkClr:
-	ld	(hl), a
-	inc	hl
-	djnz	osSizeMenu_walkClr
-	ld	a, $14
-	ld	(ti.OP1), a
-osSizeMenu_walkLoop:
-	call	ti.FindAppUp
-	ret	c
-	ld	hl, _os_size_menu_begun
-	dec	(hl)
-	jr	nz, osSizeMenu_walkLoop
-	or	a, a				; carry clear
 	ret
 
 ; App header: first field is $80/$81 $0F, then a 4-byte big-endian length. Total app size =
@@ -495,6 +453,8 @@ osSizeMenu_execTabSel:
 ; 16 bpp VRAM: pixel (1, y) is at $D40000 + (y * 320 + 1) * 2; y = 66 -> $D4A502, row pitch $3200.
 ; NOTE (Apps menu): this geometry was measured on the PRGM EXEC page. Verify the Apps menu has
 ; the same first-row y, pitch and row count (re-capture in CEmu) before trusting row math there.
+; Also verify the Apps-menu highlight really reads 0x0000 there: a themed (non-black) selection
+; bar makes this test fail, which shows up as sizes that never appear on the Apps page.
 osSizeMenu_hoverRow:
 	ld	hl, $D4A502
 	ld	bc, $3200
@@ -848,7 +808,7 @@ osSizeMenu_spaces:
 osSizeMenu_paintAt:
 	ld	hl, _os_size_menu_buf
 osSizeMenu_paintStr:
-	ld	(_os_size_menu_vat), hl		; string to draw (scratch: the walk is gone)
+	ld	(_os_size_menu_vat), hl		; string to draw (scratch)
 	ld	l, a
 	ld	h, 20
 	mlt	hl
