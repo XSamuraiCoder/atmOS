@@ -199,10 +199,11 @@ enum {
 #define NAV_GAP    4
 #define NAV_X0     ((WIN_W - (3 * NAV_W + 2 * NAV_GAP)) / 2)
 
-/* Keep these modest: vars[] is BSS and every byte here is a byte the C stack
- * cannot use. 256+48 was enough to NMI-reset CEmu (stack-limit write) once
- * icon buffers and the main loop shared the same tight stack. */
-#define MAX_VARS 64
+/* MAX_VARS caps programs + appvars TOGETHER, taken in VAT order (not name order), so
+ * once it is reached every later program is silently missing from Files. CE libs,
+ * atmOS's own appvars and game saves used to fill the old cap of 64 on real calcs.
+ * vars[] lives in the heap block below (files_alloc), not .bss/stack: 18 bytes each. */
+#define MAX_VARS 256
 #define MAX_APPS 16
 #define MAX_ITEMS (MAX_VARS + MAX_APPS)
 #define OS_TYPE_APP FILES_TYPE_APP
