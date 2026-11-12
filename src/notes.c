@@ -92,6 +92,41 @@ static uint8_t  held[5];                /* repeat counters: del, up, down, left,
 
 #define NEW(row, key) ((kb_Data[row] & (key)) && !(prev[row] & (key)))
 
+/* ---------- dirty rectangles (content-relative, like settings.c) ----------
+ * Keyboard navigation and hover report just the rows / editor area that
+ * changed, so the shell repaints those instead of the whole window. */
+#define NDQ_MAX 6
+static int16_t ndq[NDQ_MAX][4];
+static int ndq_n;
+static bool ndq_full;
+
+static void nmark(int x, int y, int w, int h)
+{
+    if (ndq_full) return;
+    if (ndq_n >= NDQ_MAX) { ndq_full = true; ndq_n = 0; return; }
+    ndq[ndq_n][0] = (int16_t)x;       ndq[ndq_n][1] = (int16_t)y;
+    ndq[ndq_n][2] = (int16_t)(x + w); ndq[ndq_n][3] = (int16_t)(y + h);
+    ndq_n++;
+}
+
+static void nmark_all(void)
+{
+    ndq_full = true;
+    ndq_n = 0;
+}
+
+static void nmark_row(int r)
+{
+    if (r < 0 || r > note_count) return;
+    nmark(ROW_X - 2, ROW_Y0 + r * row_step() - 2, ROW_W + 4, row_h() + 4);
+}
+
+/* editor box plus the status lines under it */
+static void nmark_editor(void)
+{
+    nmark(0, BOX_Y - 2, WIN_W, CONTENT_H - BOX_Y + 2);
+}
+
 /* ---------- storage ---------- */
 static void load_notes(void)
 {
@@ -218,6 +253,8 @@ void notes_open(void)
     if (mode == MODE_EDIT) leave_editor();
     mode = MODE_LIST;
     hover_row = del_row = -1;
+    ndq_n = 0;
+    ndq_full = false;
     for (i = 0; i < 8; i++) prev[i] = kb_Data[i];   /* don't replay the launch click */
 }
 
@@ -239,6 +276,8 @@ bool notes_cancel(void)
     if (mode != MODE_EDIT) return false;
     leave_editor();
     hover_row = del_row = -1;
+    ndq_n = 0;
+    ndq_full = false;
     return true;
 }
 
@@ -442,8 +481,10 @@ bool notes_hover(int x, int y)
     if (mode != MODE_LIST) return false;
     r = row_at(x, y);
     if (r == hover_row) return false;
+    nmark_row(hover_row);               /* un-highlight the old row */
     hover_row = r;
     del_row = -1;                       /* moving away cancels a pending delete */
+    nmark_row(r);                       /* highlight the new one */
     return true;
 }
 
@@ -460,8 +501,10 @@ static void open_note(int idx)
 void notes_click(int x, int y)
 {
     int r;
+    int mode0 = mode;
     if (mode != MODE_LIST) return;
     r = row_at(x, y);
+    nmark_row(del_row);                 /* a pending delete warning goes away */
     del_row = -1;
     if (r < 0) return;
     if (r == 0) {
@@ -469,9 +512,10 @@ void notes_click(int x, int y)
         notes[note_count].len = 0;
         note_count++;
         open_note(note_count - 1);
-        return;
+    } else {
+        open_note(r - 1);
     }
-    open_note(r - 1);
+    if (mode != mode0) nmark_all();     /* list -> editor: everything changed */
 }
 
 /* ---------- keyboard ---------- */
@@ -530,6 +574,7 @@ static bool edit_keys(void)
         if (idx >= 0) { caret = idx; scroll_to_caret(); did = true; }
     }
 
+    if (did) nmark_editor();            /* typing / caret moves: repaint the box */
     return did || arrows;               /* arrows never move the pointer in the editor */
 }
 
@@ -540,8 +585,11 @@ static bool list_keys(void)
             delete_note(hover_row - 1);
             del_row = -1;
             if (hover_row > note_count) hover_row = -1;
+            nmark_all();                /* rows shifted up: repaint the list */
         } else {
+            nmark_row(del_row);         /* the old warning row goes back to normal */
             del_row = hover_row;
+            nmark_row(del_row);         /* this row turns into the warning */
         }
         return true;
     }
@@ -561,8 +609,12 @@ bool notes_keys(void)
 bool notes_press(void)
 {
     if (mode != MODE_EDIT) return false;        /* list: Enter clicks the hovered row */
-    if (kb_Data[6] & kb_Enter) insert_char('\n');
-    else lower_on = !lower_on;                  /* 2nd toggles letter case */
+    if (kb_Data[6] & kb_Enter) {
+        if (insert_char('\n')) nmark_editor();
+    } else {
+        lower_on = !lower_on;                   /* 2nd toggles letter case */
+        nmark_editor();                         /* status line changed */
+    }
     return true;
 }
 
@@ -571,12 +623,14 @@ bool notes_focus_keys(void)
     bool moved = false;
     if (mode == MODE_EDIT) return notes_keys();
     if (repeat(&held[1], (kb_Data[7] & kb_Up) != 0)) {
+        nmark_row(hover_row);
         if (hover_row < 0) hover_row = 0;
         else if (hover_row > 0) hover_row--;
         del_row = -1;
         moved = true;
     }
     if (repeat(&held[2], (kb_Data[7] & kb_Down) != 0)) {
+        nmark_row(hover_row);
         if (hover_row < 0) hover_row = 0;
         else if (hover_row < note_count) hover_row++;
         del_row = -1;
@@ -586,7 +640,27 @@ bool notes_focus_keys(void)
         hover_row = 0;
         moved = true;
     }
+    if (moved) nmark_row(hover_row);    /* highlight the new row */
     return moved;
+}
+
+int notes_dirty(int x, int y, int r[][4], int max)
+{
+    int i, n = ndq_n;
+
+    if (ndq_full || n > max) {
+        ndq_full = false;
+        ndq_n = 0;
+        return -1;                      /* too many pieces: repaint the window */
+    }
+    for (i = 0; i < n; i++) {
+        r[i][0] = x + ndq[i][0];
+        r[i][1] = y + ndq[i][1];
+        r[i][2] = x + ndq[i][2];
+        r[i][3] = y + ndq[i][3];
+    }
+    ndq_n = 0;
+    return n;
 }
 
 bool notes_focus_press(void)

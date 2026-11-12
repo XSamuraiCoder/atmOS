@@ -250,7 +250,16 @@ static int hover = -1;                  /* widget under the pointer */
 static int open_drop = -1;              /* dropdown whose list is open */
 static int open_hover = -1;             /* list item under the pointer */
 static int drop_scroll = 0;             /* first visible row of a long open list */
-static uint16_t focus_prev_keys;
+static uint8_t focus_held[4];   /* held-key repeat: up, down, left, right */
+
+/* held-key repeat: fires on the press, then after ~6 frames every 2 frames,
+ * so holding an arrow moves through widgets and dropdown lists smoothly */
+static bool focus_repeat(uint8_t *h, bool down)
+{
+    if (!down) { *h = 0; return false; }
+    if (*h < 255) (*h)++;
+    return *h == 1 || (*h > 6 && (*h % 2) == 0);
+}
 
 /* Dropdown rows grow with the active font so a tall custom font never
  * overlaps the row above/below (ui_print centers glyphs on an 8px line). */
@@ -284,7 +293,11 @@ static void mark_all(void)
 
 static void mark_widget(int id)
 {
-    if (id >= 0) mark(wd[id].x - 1, wd[id].y - 1, wd[id].w + 2, wd[id].h + 2);
+    if (id >= 0)
+        /* the keyboard-focus outline is drawn 2 px outside the widget
+         * (draw_button / draw_dropdown): mark it too, or moving the focus
+         * leaves the outermost pixel of the old ring behind */
+        mark(wd[id].x - 2, wd[id].y - 2, wd[id].w + 4, wd[id].h + 4);
 }
 
 /* ---------- theme ---------- */
@@ -969,7 +982,6 @@ void settings_open(void)
     hover = -1;
     open_drop = open_hover = -1;
     drop_scroll = 0;
-    focus_prev_keys = 0;
     dq_n = 0;
     dq_full = false;
 }
@@ -1191,23 +1203,26 @@ static int focus_neighbor(int id, int dx, int dy)
 bool settings_focus_keys(void)
 {
     uint16_t keys = kb_Data[7];
-    bool up = (keys & kb_Up) && !(focus_prev_keys & kb_Up);
-    bool down = (keys & kb_Down) && !(focus_prev_keys & kb_Down);
-    bool left = (keys & kb_Left) && !(focus_prev_keys & kb_Left);
-    bool right = (keys & kb_Right) && !(focus_prev_keys & kb_Right);
+    bool up = focus_repeat(&focus_held[0], (keys & kb_Up) != 0);
+    bool down = focus_repeat(&focus_held[1], (keys & kb_Down) != 0);
+    bool left = focus_repeat(&focus_held[2], (keys & kb_Left) != 0);
+    bool right = focus_repeat(&focus_held[3], (keys & kb_Right) != 0);
 
-    focus_prev_keys = keys;
     if (open_drop >= 0) {
         int next = open_hover;
         if (up && next > 0) next--;
         else if (down && next + 1 < drop_count(open_drop)) next++;
         if (next != open_hover) {
+            int old_scroll = drop_scroll;
             mark_item(open_hover);
             open_hover = next;
             drop_clamp_scroll();
-            mark_all();
+            if (drop_scroll != old_scroll)
+                mark_all();          /* the list scrolled: repaint it */
+            else
+                mark_item(next);     /* just the highlight moved */
         }
-        return up || down;
+        return next != open_hover;
     }
 
     if (hover < 0 || !visible(hover)) {
@@ -1222,7 +1237,7 @@ bool settings_focus_keys(void)
                    down ? focus_neighbor(hover, 0, 1) :
                    left ? focus_neighbor(hover, -1, 0) :
                           focus_neighbor(hover, 1, 0);
-        if (next < 0) return true;
+        if (next < 0) return false;   /* blocked at the edge: no repaint needed */
         mark_widget(hover);
         hover = next;
         mark_widget(hover);

@@ -33,6 +33,7 @@ bool files_load_pin_icon(const files_pin_t *pin, uint8_t pixels[16 * 16]);
 void files_open(void);
 void files_draw(int x, int y);
 void files_draw_region(int x, int y, int x0, int y0, int x1, int y1);
+int  files_dirty(int x, int y, int r[][4], int max);   /* changed rects, or -1 = whole window */
 void files_click(int x, int y);
 bool files_tick(void);
 bool files_hover(int x, int y);

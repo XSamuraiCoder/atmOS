@@ -487,10 +487,10 @@ static const app_t apps[] = {
     { NULL, placeholder_draw, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, /* APP_PLACEHOLDER */
     { "Files", files_draw, files_click, files_tick, files_hover,
       files_keys, files_press, files_focus_keys, files_focus_press,
-      files_draw_region, NULL },                                  /* APP_FILES */
+      files_draw_region, files_dirty },                           /* APP_FILES */
     { "Notes", notes_draw, notes_click, NULL, notes_hover,
       notes_keys, notes_press, notes_focus_keys, notes_focus_press,
-      NULL, NULL },                                               /* APP_NOTES */
+      NULL, notes_dirty },                                        /* APP_NOTES */
     { "Settings", settings_draw, settings_click, NULL, settings_hover,
       settings_keys, settings_press, settings_focus_keys, settings_focus_press,
       settings_draw_region,
@@ -1090,7 +1090,7 @@ static bool move_dock_focus(void)
         int8_t dir = left ? -1 : 1;
         if (dir != dock_hold_dir) { dock_hold_dir = dir; dock_hold = 0; }
         if (dock_hold < 255) dock_hold++;
-        fire = dock_hold == 1 || (dock_hold > 20 && dock_hold % 3 == 0);
+        fire = dock_hold == 1 || (dock_hold > 6 && dock_hold % 2 == 0);
         direction = dir;
     } else {
         dock_hold_dir = 0;
@@ -1194,7 +1194,12 @@ static int shell_main(void)
             }
             if (keyboard_focus) {
                 if (open_app < 0 && move_dock_focus()) mark_dock();
-                if (app_keys) dirty = true;
+                if (app_keys) {
+                    /* Keyboard navigation must not force a full-screen
+                     * repaint: let the app report just what changed. */
+                    if (apps[open_app].dirty) collect_app_dirty();
+                    else mark_window();
+                }
             } else if (app_keys) {
                 dirty = true;
             } else {
@@ -1260,6 +1265,13 @@ static int shell_main(void)
                 if (!keyboard_focus && !handled)
                     handled = open_app >= 0 && in_window() && !on_close &&
                               apps[open_app].press && apps[open_app].press();
+                if (keyboard_focus && handled && open_app == app_before &&
+                    open_app >= 0 && apps[open_app].dirty) {
+                    /* keyboard activation: let the app report what changed
+                     * instead of repainting the whole screen */
+                    collect_app_dirty();
+                    full_redraw = false;
+                }
                 if (!keyboard_focus) {
                     bool click_in_app = !handled && open_app >= 0 && in_window() &&
                                         !on_close && cur_y >= WIN_Y + TITLE_H &&

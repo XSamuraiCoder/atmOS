@@ -99,6 +99,12 @@ bool files_focus_keys(void)
     return false;
 }
 
+int files_dirty(int x, int y, int r[][4], int max)
+{
+    (void)x; (void)y; (void)r; (void)max;
+    return -1;
+}
+
 bool files_focus_press(void)
 {
     return false;
@@ -239,7 +245,16 @@ static int  hover_btn = -1;       /* 2/3 = page, 4-6 = folders */
 static int  launch_request = -1;  /* selected program awaiting launch by main */
 static bool keyboard_toolbar_focus;
 static int keyboard_folder_focus;
-static uint16_t keyboard_prev_keys;
+static uint8_t focus_held[4];   /* held-key repeat: left, right, up, down */
+
+/* held-key repeat: fires on the press, then after ~6 frames every 2 frames,
+ * so holding an arrow glides through the grid instead of one step per press */
+static bool focus_repeat(uint8_t *h, bool down)
+{
+    if (!down) { *h = 0; return false; }
+    if (*h < 255) (*h)++;
+    return *h == 1 || (*h > 6 && (*h % 2) == 0);
+}
 static bool pin_menu_open;
 static int pin_menu_choice;
 static int pin_menu_item = -1;
@@ -1065,7 +1080,6 @@ void files_open(void)
     pin_menu_prev_keys = 0;
     keyboard_toolbar_focus = true;
     keyboard_folder_focus = (int)cur_folder;
-    keyboard_prev_keys = 0;
 #ifndef FILES_NO_ICONS
     icon_cache_page = -1;
 #endif
@@ -1113,6 +1127,11 @@ bool files_hover(int x, int y)
     return false;
 }
 
+static void fmark(int x, int y, int w, int h);       /* dirty rects, defined below */
+static void fmark_tile(int idx);
+static void fmark_toolbar(void);
+static void fmark_grid(void);
+
 void files_click(int x, int y)
 {
     if (pin_menu_open) {
@@ -1124,6 +1143,7 @@ void files_click(int x, int y)
             pin_menu_open = false;
             pin_menu_notice = 0;
         }
+        fmark(PIN_MENU_X, PIN_MENU_Y, PIN_MENU_W, PIN_MENU_H);
         return;
     }
 
@@ -1133,6 +1153,8 @@ void files_click(int x, int y)
         sel = -1;
         hover_tile = hover_btn = -1;
         rebuild_view();
+        fmark_toolbar();
+        fmark_grid();
         return;
     }
 
@@ -1140,11 +1162,13 @@ void files_click(int x, int y)
     if (hover_btn == 2 && page > 0) {
         page--;
         hover_tile = -1;
+        fmark_grid();
         return;
     }
     if (hover_btn == 3 && page < page_count() - 1) {
         page++;
         hover_tile = -1;
+        fmark_grid();
         return;
     }
 
@@ -1158,8 +1182,10 @@ void files_click(int x, int y)
                 launch_request = idx;
             }
         } else {
+            fmark_tile(sel);
             sel = idx;               /* first click: select */
             launch_request = -1;
+            fmark_tile(sel);
         }
     }
 }
@@ -1169,6 +1195,8 @@ bool files_tick(void)
     return false;   /* everything is pointer-driven */
 }
 
+static void fmark(int x, int y, int w, int h);   /* defined below (dirty rects) */
+
 bool files_keys(void)
 {
     uint16_t keys = kb_Data[7];
@@ -1176,9 +1204,12 @@ bool files_keys(void)
     bool down = (keys & kb_Down) && !(pin_menu_prev_keys & kb_Down);
     pin_menu_prev_keys = keys;
     if (!pin_menu_open) return false;
-    if (up) pin_menu_choice = 0;
-    if (down) pin_menu_choice = 1;
-    return true;
+    if (up || down) {
+        pin_menu_choice = up ? 0 : 1;
+        fmark(PIN_MENU_X, PIN_MENU_Y, PIN_MENU_W, PIN_MENU_H);
+        return true;
+    }
+    return false;
 }
 
 bool files_press(void)
@@ -1188,28 +1219,83 @@ bool files_press(void)
     return true;
 }
 
+/* ---------- dirty rectangles (content-relative, like settings.c) ----------
+ * Keyboard navigation reports just the tiles / strips that changed, so the
+ * shell repaints those instead of the whole screen twice per frame. */
+#define FDQ_MAX 6
+static int16_t fdq[FDQ_MAX][4];
+static int fdq_n;
+static bool fdq_full;
+
+static void fmark(int x, int y, int w, int h)
+{
+    if (fdq_full) return;
+    if (fdq_n >= FDQ_MAX) { fdq_full = true; fdq_n = 0; return; }
+    fdq[fdq_n][0] = (int16_t)x;       fdq[fdq_n][1] = (int16_t)y;
+    fdq[fdq_n][2] = (int16_t)(x + w); fdq[fdq_n][3] = (int16_t)(y + h);
+    fdq_n++;
+}
+
+static void fmark_all(void)
+{
+    fdq_full = true;
+    fdq_n = 0;
+}
+
+static void fmark_tile(int idx)
+{
+    int tx, ty;
+    if (idx < 0 || idx >= view_count) return;
+    tile_pos(idx % PER_PAGE, &tx, &ty);
+    fmark(tx - 2, ty - 2, TILE_W + 4, TILE_H + 4);
+}
+
+static void fmark_toolbar(void)  { fmark(0, 0, WIN_W, TOOL_H); }
+static void fmark_grid(void)     { fmark(GRID_X0 - 2, GRID_Y0 - 2,
+                                         COLS * TILE_W + (COLS - 1) * GAP + 4,
+                                         ROWS * TILE_H + (ROWS - 1) * GAP + 4); }
+static void fmark_pager(void)    { fmark(0, CONTENT_H - 12, WIN_W, 12); }
+
+int files_dirty(int x, int y, int r[][4], int max)
+{
+    int i, n = fdq_n;
+
+    if (fdq_full || n > max) {
+        fdq_full = false;
+        fdq_n = 0;
+        return -1;                       /* too many pieces: repaint the window */
+    }
+    for (i = 0; i < n; i++) {
+        r[i][0] = x + fdq[i][0];
+        r[i][1] = y + fdq[i][1];
+        r[i][2] = x + fdq[i][2];
+        r[i][3] = y + fdq[i][3];
+    }
+    fdq_n = 0;
+    return n;
+}
+
 bool files_focus_keys(void)
 {
     uint16_t keys = kb_Data[7];
-    bool left = (keys & kb_Left) && !(keyboard_prev_keys & kb_Left);
-    bool right = (keys & kb_Right) && !(keyboard_prev_keys & kb_Right);
-    bool up = (keys & kb_Up) && !(keyboard_prev_keys & kb_Up);
-    bool down = (keys & kb_Down) && !(keyboard_prev_keys & kb_Down);
-    bool changed = false;
+    bool left = focus_repeat(&focus_held[0], (keys & kb_Left) != 0);
+    bool right = focus_repeat(&focus_held[1], (keys & kb_Right) != 0);
+    bool up = focus_repeat(&focus_held[2], (keys & kb_Up) != 0);
+    bool down = focus_repeat(&focus_held[3], (keys & kb_Down) != 0);
     int next;
 
-    keyboard_prev_keys = keys;
     if (pin_menu_open) return files_keys();
 
     if (keyboard_toolbar_focus) {
         if (left && keyboard_folder_focus > 0) {
             keyboard_folder_focus--;
-            changed = true;
+            fmark_toolbar();
         } else if (right && keyboard_folder_focus < 2) {
             keyboard_folder_focus++;
-            changed = true;
+            fmark_toolbar();
         }
         if (down) {
+            fmark_toolbar();
             keyboard_toolbar_focus = false;
             if (view_count > 0) {
                 int first = page * PER_PAGE;
@@ -1218,19 +1304,20 @@ bool files_focus_keys(void)
                     target = first;
                 sel = target;
             }
-            changed = true;
+            fmark_grid();
         }
         hover_btn = 4 + keyboard_folder_focus;
         hover_tile = -1;
     } else {
+        int old_sel = sel;
         if (up && (view_count == 0 || sel < 0 ||
                    sel % PER_PAGE < COLS)) {
             keyboard_toolbar_focus = true;
             keyboard_folder_focus = sel >= 0 ? sel % COLS : (int)cur_folder;
-            hover_btn = 4 + keyboard_folder_focus;
-            hover_tile = -1;
-            changed = true;
+            /* the tile keeps its selection highlight, as before */
+            fmark_toolbar();
         } else if (view_count > 0) {
+            int old_page = page;
             if (sel < 0 || sel >= view_count) sel = page * PER_PAGE;
             next = sel;
             if (left && sel % COLS > 0) next--;
@@ -1246,15 +1333,20 @@ bool files_focus_keys(void)
             if (next != sel) {
                 sel = next;
                 page = sel / PER_PAGE;
-                changed = true;
+                if (page != old_page) {
+                    fmark_grid();       /* new page of tiles */
+                    fmark_pager();
+                } else {
+                    fmark_tile(old_sel);
+                    fmark_tile(sel);
+                }
             }
         }
         hover_btn = -1;
         hover_tile = sel >= 0 ? sel % PER_PAGE : -1;
-        if (up || down || left || right) changed = true;
     }
 
-    return changed || left || right || up || down;
+    return fdq_full || fdq_n > 0;   /* false when blocked: no repaint needed */
 }
 
 bool files_focus_press(void)
@@ -1293,6 +1385,7 @@ bool files_alpha(void)
     pin_menu_prev_keys = kb_Data[7];
     pin_menu_is_pinned = files_is_pinned(vars[view[idx]].name,
                                          vars[view[idx]].type);
+    memset(focus_held, 0, sizeof focus_held);   /* don't replay a held arrow */
     pin_menu_open = true;
     return true;
 }

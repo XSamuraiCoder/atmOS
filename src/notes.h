@@ -14,6 +14,7 @@ bool notes_keys(void);                      /* arrows / typing; true = used */
 bool notes_press(void);                     /* Enter / 2nd; true = handled */
 bool notes_focus_keys(void);
 bool notes_focus_press(void);
+int  notes_dirty(int x, int y, int r[][4], int max);   /* changed rects, or -1 = whole window */
 bool notes_cancel(void);                    /* Clear; true = handled (back to list) */
 void notes_flush(void);                     /* save + archive; call before leaving the shell */
 
