@@ -56,18 +56,37 @@ static atmos_rgb_t palette[PIC_COLORS];
 /* mods link no C library: no memcpy */
 static void copy(uint8_t *dst, const uint8_t *src, int n) { while (n-- > 0) *dst++ = *src++; }
 
-/* The picture data at the end of this mod's own AppVar, or NULL. Looked up on every use:
- * archiving a variable can move the archive. */
-static const uint8_t *picture(void)
+static const uint8_t *cached;          /* where the picture was last found */
+
+/* "atmOSwp2" + our name at d? (name is filled in by mod_main; empty until then) */
+static bool is_ours(const uint8_t *d)
 {
     static const char magic[8] = { 'a', 't', 'm', 'O', 'S', 'w', 'p', '2' };
-    int size, k;
-    const uint8_t *d = shell->var_data(MOD_VAR, &size);
+    int k;
 
+    for (k = 0; k < 8; k++)
+        if (d[k] != (uint8_t)magic[k]) return false;
+    for (k = 0; k < PIC_NAME && name[k]; k++)
+        if (d[8 + k] != (uint8_t)name[k]) return false;
+    return true;
+}
+
+/* The picture data at the end of this mod's own AppVar, or NULL. Searching the variable table
+ * (var_data) on every repaint lags the pointer, so the address is kept and only checked: it
+ * stays valid unless archiving a variable garbage collects and moves the archive, and then the
+ * check fails and the AppVar is looked up again. */
+static const uint8_t *picture(void)
+{
+    int size;
+    const uint8_t *d;
+
+    if (cached && is_ours(cached)) return cached;
+    cached = NULL;
+    d = shell->var_data(MOD_VAR, &size);
     if (!d || size < PIC_SIZE) return NULL;
     d += size - PIC_SIZE;
-    for (k = 0; k < 8; k++)
-        if (d[k] != (uint8_t)magic[k]) return NULL;
+    if (!is_ours(d)) return NULL;
+    cached = d;
     return d;
 }
 
