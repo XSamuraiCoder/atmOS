@@ -150,7 +150,7 @@ jobs:
 
       - name: Collect build outputs
         run: |
-          mkdir -p "dist/extra mods"
+          mkdir -p "dist/extra wallpapers"
           cp bin/atmOS.*.8xv dist/
           cp bin/ATMOS.8xp bin/clibs.8xg readme.txt dist/
           cp mods/wallpapers/bin/WP*.8xv "dist/extra mods/"
