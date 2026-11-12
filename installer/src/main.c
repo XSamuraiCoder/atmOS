@@ -102,8 +102,18 @@ static const theme_t themes[THEME_COUNT] = {
 
 /* Mod themes: filled by scan_mod_themes(); index THEME_COUNT + n, as in the shell. */
 #define MOD_NAME_LEN 16                 /* settings.c: char name[16] */
-static struct { char name[MOD_NAME_LEN]; theme_t t; } mod_themes[MOD_THEME_MAX];
+static struct {
+    char name[MOD_NAME_LEN];
+    theme_t t;
+    int8_t wall;                        /* paired wallpaper (set_theme_wallpaper), -1 = none */
+} mod_themes[MOD_THEME_MAX];
 static uint8_t mod_theme_count;
+
+/* Mod wallpapers (API 1.1): only their names are kept - the installer draws the gradient.
+ * Indices WALL_COUNT + n, as in the shell's Wallpaper list. */
+#define MOD_WALL_MAX 4                  /* WALL_MOD_MAX in the shell's wallpapers.h */
+static char mod_walls[MOD_WALL_MAX][MOD_NAME_LEN];
+static uint8_t mod_wall_count;
 
 static int theme_total(void) { return THEME_COUNT + mod_theme_count; }
 
@@ -120,6 +130,22 @@ static const theme_t *theme_lookup(int i)
 }
 
 static const char *const wall_names[WALL_COUNT] = { "Gradient", "Flat", "Reverse" };
+
+static int wall_total(void) { return WALL_COUNT + mod_wall_count; }
+
+static const char *wall_name(int i)
+{
+    if (i < 0 || i >= wall_total()) return "?";
+    return i < WALL_COUNT ? wall_names[i] : mod_walls[i - WALL_COUNT];
+}
+
+/* Same as the shell's set_theme(): a mod theme's paired wallpaper comes along, and leaving a
+ * theme while its paired wallpaper is showing goes back to the gradient. */
+static int theme_wallpaper(int theme)
+{
+    if (theme < THEME_COUNT || theme >= theme_total()) return -1;
+    return mod_themes[theme - THEME_COUNT].wall;
+}
 
 static const struct { const char *name; rgb_t c; } tints[TINT_COUNT] = {
     { "White",    { 248, 248, 250 } }, { "Silver",   { 222, 222, 228 } },
@@ -255,6 +281,7 @@ static int stub_register_theme(const atmos_theme_t *th)
     mod_themes[mod_theme_count].t.bar_line = to_rgb(th->bar_line);
     mod_themes[mod_theme_count].t.dock     = to_rgb(th->dock);
     mod_themes[mod_theme_count].t.accent   = to_rgb(th->accent);
+    mod_themes[mod_theme_count].wall       = -1;
     return THEME_COUNT + mod_theme_count++;
 }
 
@@ -272,9 +299,43 @@ static void stub_var_archive(const char *n)                   { (void)n; }
 static bool stub_register_app(const atmos_app_t *a)           { return a != NULL; }
 static void stub_void(void)                                   { }
 static bool stub_apply_theme(int i)                           { return i >= 0 && i < theme_total(); }
-static int  stub_register_wallpaper(const atmos_wallpaper_t *w) { (void)w; return -1; }
 static bool stub_apply_wallpaper(int i)                       { (void)i; return false; }
-static uint8_t *stub_draw_buffer(void)                        { return (uint8_t *)0xD52C00; } /* unused: no wallpapers here */
+static uint8_t *stub_draw_buffer(void)                        { return (uint8_t *)0xD52C00; } /* never drawn here */
+
+/* Mod wallpapers are listed by name (same index rules as wallpapers_register), so a mod theme's
+ * paired wallpaper resolves to the same Wallpaper index the shell will use. */
+static int stub_register_wallpaper(const atmos_wallpaper_t *w)
+{
+    int i;
+
+    if (!w || !w->name || !w->name[0] || !w->draw) return -1;
+    for (i = 0; i < mod_wall_count; i++)
+        if (strcmp(mod_walls[i], w->name) == 0) return WALL_COUNT + i;
+    if (mod_wall_count >= MOD_WALL_MAX || strlen(w->name) >= MOD_NAME_LEN) return -1;
+    strcpy(mod_walls[mod_wall_count], w->name);
+    return WALL_COUNT + mod_wall_count++;
+}
+
+static bool stub_set_theme_wallpaper(int theme, int wall)
+{
+    if (theme < THEME_COUNT || theme >= theme_total() || wall < -1 || wall >= wall_total())
+        return false;
+    mod_themes[theme - THEME_COUNT].wall = (int8_t)wall;
+    return true;
+}
+
+/* As the shell's var_data: mods check that their data AppVars exist (GraphX is off here). */
+static const void *stub_var_data(const char *n, int *s)
+{
+    uint8_t h;
+    const void *p;
+
+    if (!n || !(h = ti_Open(n, "r"))) return NULL;
+    p = ti_GetDataPtr(h);
+    if (s) *s = (int)ti_GetSize(h);
+    ti_Close(h);
+    return p;
+}
 
 static const atmos_api_t stub_api = {
     ATMOS_API_VERSION, 304, 186,
@@ -284,8 +345,9 @@ static const atmos_api_t stub_api = {
     stub_var_read, stub_var_write, stub_var_archive,
     stub_register_app, stub_register_theme, stub_void, stub_void,
     stub_apply_theme,
-    ATMOS_API_MINOR,                    /* 1.1: mod wallpapers are not offered here, only themes */
-    stub_register_wallpaper, stub_apply_wallpaper, stub_draw_buffer
+    ATMOS_API_MINOR,                    /* 1.1: wallpapers by name only (nothing is drawn here) */
+    stub_register_wallpaper, stub_apply_wallpaper, stub_draw_buffer, stub_var_data,
+    stub_set_theme_wallpaper
 };
 
 static void make_rec(uint8_t *rec, const char *name, size_t size)
@@ -382,7 +444,8 @@ static void run_mod_for_themes(const char *name)
     mem_size = (size_t)(uintptr_t)hdr.bss_end;
     count    = hdr.reloc_count;
     if (image < sizeof(hdr) || mem_size < image || mem_size > MODS_MAX_MEM ||
-        size != image + count * 2 || entry < sizeof(hdr) || entry >= image)
+        size < image + count * 2 || (hdr.api == 0x01 && size != image + count * 2) ||
+        entry < sizeof(hdr) || entry >= image)
         goto bad;
     for (i = 0; i < ATMOS_MOD_NAME_MAX && hdr.name[i]; i++)
         if (hdr.name[i] < ' ' || hdr.name[i] > '~') goto bad;
@@ -429,6 +492,7 @@ static void scan_mod_themes(void)
     int count = 0, i;
 
     mod_theme_count = 0;
+    mod_wall_count = 0;
     recover_from_crash();
 
     /* Collect the names first: loading opens files, which would disturb the search. */
@@ -458,7 +522,7 @@ static void scan_mod_themes(void)
 /* ---------- SHLSET (call only when GraphX is off) ---------- */
 static bool sane(const uint8_t *b)
 {
-    return b[1] < THEME_COUNT + MOD_THEME_MAX && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
+    return b[1] < THEME_COUNT + MOD_THEME_MAX && b[2] < WALL_COUNT + MOD_WALL_MAX && b[3] <= ACCENT_COUNT &&
            b[4] <= FONT_CUSTOM && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
@@ -935,7 +999,7 @@ static void row_text(int r, char *out)
 {
     switch (r) {
         case R_THEME:  sprintf(out, "Theme: %s", theme_name(pf.theme)); break;
-        case R_WALL:   sprintf(out, "Wallpaper: %s", wall_names[pf.wall]); break;
+        case R_WALL:   sprintf(out, "Wallpaper: %s", wall_name(pf.wall)); break;
         case R_ACCENT: sprintf(out, "Accent color: %s",
                                pf.accent ? accents[pf.accent - 1].name : "Theme"); break;
         case R_FONT:   sprintf(out, "Font: %s",
@@ -961,8 +1025,14 @@ static uint8_t cycle(uint8_t v, int n, int d)
 static void row_change(int r, int d)
 {
     switch (r) {
-        case R_THEME:  pf.theme    = cycle(pf.theme,  theme_total(), d);      break;
-        case R_WALL:   pf.wall     = cycle(pf.wall,   WALL_COUNT, d);       break;
+        case R_THEME: {
+            int old_wall = theme_wallpaper(pf.theme);
+            pf.theme = cycle(pf.theme, theme_total(), d);
+            if (theme_wallpaper(pf.theme) >= 0) pf.wall = (uint8_t)theme_wallpaper(pf.theme);
+            else if (old_wall >= 0 && pf.wall == old_wall) pf.wall = 0;
+            break;
+        }
+        case R_WALL:   pf.wall     = cycle(pf.wall,   wall_total(), d);     break;
         case R_ACCENT: pf.accent   = cycle(pf.accent, ACCENT_COUNT + 1, d); break;
         case R_FONT:   pf.font_sel = cycle(pf.font_sel, custom_count + 1, d); break;
         case R_BAR:    pf.bar      = cycle(pf.bar,    TINT_COUNT + 1, d);   break;

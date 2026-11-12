@@ -56,6 +56,8 @@ void wallpapers_setup_palette(int index)
     int i;
 
     if (wallpapers_uses_gradient(index)) return;
+    for (i = 0; i < 216; i++)                       /* the fixed cube: same values as files.c */
+        gfx_palette[WALLPAPER_CUBE0 + i] = gfx_RGBTo1555(i / 36 * 51, i / 6 % 6 * 51, i % 6 * 51);
     index -= WALL_STYLE_COUNT;
     for (i = 0; i < mod_wall[index].colors; i++)
         gfx_palette[WALLPAPER_SLOT(i)] = gfx_RGBTo1555(mod_wall[index].palette[i].r,

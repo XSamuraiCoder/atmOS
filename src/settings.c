@@ -64,7 +64,11 @@ static const settings_theme_t themes[THEME_COUNT] = {
 };
 
 /* ---------- runtime themes (registered by mods; see settings.h) ---------- */
-static struct { char name[16]; settings_theme_t t; } mod_themes[SETTINGS_MOD_THEME_MAX];
+static struct {
+    char name[16];
+    settings_theme_t t;
+    int8_t wall;                        /* paired wallpaper (set_theme_wallpaper), -1 = none */
+} mod_themes[SETTINGS_MOD_THEME_MAX];
 static uint8_t mod_theme_count;
 
 /* Wallpaper list (names, pictures, mod ones): wallpapers.h / wallpapers.c */
@@ -158,11 +162,42 @@ int settings_register_theme(const char *name, const settings_theme_t *theme)
     index = THEME_COUNT + mod_theme_count;
     strcpy(mod_themes[mod_theme_count].name, name);
     mod_themes[mod_theme_count].t = *theme;
+    mod_themes[mod_theme_count].wall = -1;
     mod_theme_count++;                     /* count BEFORE rebuild_theme: the lookup (and a saved
                                               prefs.theme) must already see this new entry */
     rebuild_theme();                      /* a saved prefs.theme may now point at this theme */
     changed = true;                       /* the active theme may now resolve differently */
     return index;
+}
+
+/* A mod theme can come with a wallpaper (mod API 1.1, set_theme_wallpaper): picking the theme
+ * also picks that wallpaper, which can still be changed afterwards. */
+static int theme_wallpaper(int theme)
+{
+    if (theme < THEME_COUNT || theme >= settings_theme_count()) return -1;
+    return mod_themes[theme - THEME_COUNT].wall;
+}
+
+bool settings_pair_theme_wallpaper(int theme, int wall)
+{
+    if (theme < THEME_COUNT || theme >= settings_theme_count() ||
+        wall < -1 || wall >= wallpapers_count())
+        return false;                   /* only mod themes; built-in presets stay as they are */
+    mod_themes[theme - THEME_COUNT].wall = (int8_t)wall;
+    return true;
+}
+
+/* p->theme becomes `theme`: its paired wallpaper comes along; leaving a theme while its paired
+ * wallpaper is still showing goes back to the gradient. */
+static void set_theme(prefs_t *p, int theme)
+{
+    int old_wall = theme_wallpaper(p->theme), new_wall = theme_wallpaper(theme);
+
+    p->theme = (uint8_t)theme;
+    if (new_wall >= 0)
+        p->wall = (uint8_t)new_wall;
+    else if (old_wall >= 0 && p->wall == old_wall)
+        p->wall = 0;
 }
 
 /* ---------- widgets ---------- */
@@ -561,7 +596,7 @@ static int drop_value(const prefs_t *p, int id)
 static void drop_set(prefs_t *p, int id, int v)
 {
     switch (id) {
-    case W_THEME:  p->theme = (uint8_t)v;  break;
+    case W_THEME:  set_theme(p, v);        break;
     case W_WALL:   p->wall = (uint8_t)v;   break;
     case W_ACCENT: p->accent = (uint8_t)v; break;
     case W_FONT:
@@ -1017,8 +1052,8 @@ bool settings_select_theme(int index)
 
     if (index < 0 || index >= settings_theme_count())
         return false;
-    next.theme = (uint8_t)index;
-    next.wall = 0;                     /* follow the theme */
+    next.wall = 0;                     /* follow the theme (or its paired wallpaper) */
+    set_theme(&next, index);
     next.accent = 0;
     next.bar = 0;
     next.dock = 0;

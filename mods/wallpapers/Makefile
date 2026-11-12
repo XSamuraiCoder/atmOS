@@ -1,13 +1,33 @@
 # ----------------------------
-# atmOS mod: CEdev project
+# atmOS picture wallpaper mods: CEdev project
 # ----------------------------
+#
+# `make` builds one self-contained mod per picture: bin/WPDUNES.8xv, bin/WPLAKE.8xv and
+# bin/WPAURORA.8xv. Each is the mod code (src/main.c, built with -DPIC=n), its relocation table,
+# then the picture + theme data (data/<name>.bin, from tools/gen_wallpapers.py). Only the code
+# is loaded into RAM; the mod reads its picture in place, so the AppVars are archived.
+# atmOS finds a mod by the "atmOS mod: <name>" header in its data, not by the AppVar name - but
+# these mods find their own picture by AppVar name, so keep NAME in sync with src/main.c.
 
-# NAME is the AppVar name (any name, up to 8 characters). atmOS finds the mod by the
-# "atmOS mod: <name>" header in its data (ATMOS_MOD_HEADER in the C source), loads it at a
-# dynamic address and relocates it.
-NAME ?= ATMWALL
-DESCRIPTION ?= "Picture wallpapers for atmOS"
-ARCHIVED ?= NO
+ifeq ($(PIC),)
+
+# ---- driver: build each picture's mod in its own make run (own obj/ folder and -DPIC) ----
+.DEFAULT_GOAL := all
+.PHONY: all appvar clean
+all appvar:
+	$(MAKE) PIC=0 NAME=WPDUNES  PICDATA=data/dunes.bin
+	$(MAKE) PIC=1 NAME=WPLAKE   PICDATA=data/lake.bin
+	$(MAKE) PIC=2 NAME=WPAURORA PICDATA=data/aurora.bin
+clean:
+	$(MAKE) PIC=0 NAME=WPDUNES  clean
+	$(MAKE) PIC=1 NAME=WPLAKE   clean
+	$(MAKE) PIC=2 NAME=WPAURORA clean
+
+else
+
+DESCRIPTION ?= "Picture wallpaper for atmOS"
+ARCHIVED ?= YES
+OBJDIR := obj/$(NAME)
 
 # Most memory a mod may need (image + .bss). Keep in sync with MODS_MAX_MEM in the shell's mods.h.
 MAX_MEM ?= 16384
@@ -19,8 +39,8 @@ PYTHON ?= python
 LINKER_SCRIPT ?= mod.ld
 EXTRA_CLEAN = $(call RM,$(LINKER_SCRIPT))
 
-CFLAGS   ?= -Wall -Wextra -Oz -ffreestanding -fno-builtin
-CXXFLAGS ?= -Wall -Wextra -Oz
+CFLAGS   = -Wall -Wextra -Oz -ffreestanding -fno-builtin -DPIC=$(PIC)
+CXXFLAGS = -Wall -Wextra -Oz
 
 # ----------------------------
 
@@ -31,6 +51,7 @@ include $(shell cedev-config --makefile)
 MOD_ELF := $(BINDIR)/$(NAME).elf
 MOD_IMG := $(BINDIR)/$(NAME).img
 MOD_BIN := $(BINDIR)/$(NAME).bin
+MOD_FULL := $(BINDIR)/$(NAME).full
 MOD_VAR := $(BINDIR)/$(NAME).8xv
 
 ifeq ($(ARCHIVED),YES)
@@ -105,5 +126,11 @@ $(MOD_IMG): $(MOD_ELF)
 $(MOD_BIN): $(MOD_IMG) $(MOD_ELF) tools/mkmod.py
 	$(Q)$(PYTHON) tools/mkmod.py $(MOD_ELF) $(MOD_IMG) $@ --max-mem $(MAX_MEM)
 
-$(MOD_VAR): $(MOD_BIN)
+# mod (code + relocation table), then the picture data the mod reads in place
+$(MOD_FULL): $(MOD_BIN) $(PICDATA)
+	$(Q)$(PYTHON) -c "import sys; open(sys.argv[3], 'wb').write(open(sys.argv[1], 'rb').read() + open(sys.argv[2], 'rb').read())" $(MOD_BIN) $(PICDATA) $@
+
+$(MOD_VAR): $(MOD_FULL)
 	$(Q)$(CONVBIN) -j bin -k 8xv -n $(NAME) $(MOD_VAR_FLAGS) -i $< -o $@
+
+endif

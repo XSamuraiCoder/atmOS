@@ -29,6 +29,7 @@ int  settings_theme_count(void);                 /* built-in + registered themes
 const char *settings_theme_name(int index);      /* dropdown label; "?" when out of range */
 const settings_theme_t *settings_theme_lookup(int index);   /* clamped to theme 0 when invalid */
 int  settings_register_theme(const char *name, const settings_theme_t *theme);   /* index or -1 */
+bool settings_pair_theme_wallpaper(int theme, int wall);   /* mod theme + its wallpaper (-1 = none) */
 bool settings_select_theme(int index);           /* make theme[index] active now: saved, applied the same frame (the mod API's apply_theme) */
 uint8_t settings_pointer_speed(void);           /* 0 = slow, 1 = normal, 2 = fast */
 bool settings_clock_24h(void);                  /* false = 12-hour with AM/PM */

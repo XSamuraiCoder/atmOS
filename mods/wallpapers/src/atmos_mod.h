@@ -17,7 +17,7 @@
  * (it links the mod at address 0 and appends the relocation table).
  *
  * Versions. 1.0: apps and themes. 1.1: wallpapers (register_wallpaper / apply_wallpaper,
- * draw_buffer, ATMOS_PAL_WALL) and api->minor.
+ * draw_buffer, ATMOS_PAL_WALL, ATMOS_PAL_CUBE), set_theme_wallpaper, var_data and api->minor.
  * The header's api byte says which version a mod was built for: 0x01 for 1.0, 0x11 for 1.1.
  * A 1.1 shell loads both. A 1.0 shell refuses 0x11 mods, so a mod built with this header only
  * ever runs where every field of atmos_api_t below exists. To also run on 1.0 shells, build
@@ -49,7 +49,8 @@
  * image (pointers are 3 bytes on the eZ80, which makes the struct exactly 32 bytes). The mod
  * build appends reloc_count 16-bit offsets after the image; each one is the position of a 24-bit
  * address in the image that atmOS adjusts by the load address. File size = image_end + 2 *
- * reloc_count. */
+ * reloc_count. 1.1 mods may append data of their own after the table (e.g. a picture): it is
+ * not loaded into RAM - read it in place with var_data. */
 #define ATMOS_MOD_SIGNATURE "atmOS mod: "
 #define ATMOS_MOD_SIG_LEN   11
 #define ATMOS_MOD_NAME_MAX  8
@@ -96,6 +97,11 @@ enum {
  * gradient's entries otherwise, so use them only inside the wallpaper's draw(). */
 #define ATMOS_WALL_COLORS 24
 #define ATMOS_PAL_WALL(i) ((uint8_t)((i) < 16 ? (i) : 246 + (i) - 16))
+
+/* 1.1: also while a mod wallpaper is active, entries 30..245 hold a fixed 6x6x6 color cube:
+ * r, g, b = 0..5 stand for 0, 51, 102, 153, 204, 255. With the wallpaper's own colors that is
+ * ~240 colors (8bpp) for a picture. */
+#define ATMOS_PAL_CUBE(r, g, b) ((uint8_t)(30 + (r) * 36 + (g) * 6 + (b)))
 
 /* kb[row] bits, same layout as keypadc's kb_Data (the shell scans the keypad every frame). */
 #define ATMOS_KB_ENTER_ROW 6
@@ -202,6 +208,17 @@ typedef struct atmos_api {
                                                      * index of the list; false when invalid */
     uint8_t *(*draw_buffer)(void);                   /* the 320x240 buffer being drawn, safe to
                                                      * write (waits for the last screen flip) */
+    const void *(*var_data)(const char *name, int *size);  /* an AppVar's data where it lies
+                                                     * (RAM or archive, read-only) and its size,
+                                                     * or NULL. No copy: big data (pictures) can
+                                                     * stay in an archived AppVar. Archiving any
+                                                     * variable can move the archive, so look it
+                                                     * up each time you use it (it is quick). */
+    bool (*set_theme_wallpaper)(int theme, int wallpaper);  /* pair a theme this mod registered
+                                                     * with a wallpaper index (-1 = none): picking
+                                                     * the theme in Settings (or apply_theme) also
+                                                     * picks the wallpaper, which the user can still
+                                                     * change. Built-in themes cannot be paired. */
 } atmos_api_t;
 
 typedef bool (*atmos_mod_main_t)(const atmos_api_t *api);

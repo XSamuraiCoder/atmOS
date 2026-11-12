@@ -174,6 +174,28 @@ static int api_register_wallpaper(const atmos_wallpaper_t *wp)
                                wp->draw);
 }
 
+/* 1.1: an AppVar's data in place (fileioc finds RAM and archived ones alike). Archiving a
+ * variable (a pin, a mod's var_archive) can garbage collect and move the archive, so mods look
+ * the data up each time they use it. */
+static const void *api_var_data(const char *name, int *size)
+{
+    uint8_t h;
+    const void *p;
+
+    if (!name) return NULL;
+    h = ti_Open(name, "r");
+    if (!h) return NULL;
+    p = ti_GetDataPtr(h);
+    if (size) *size = (int)ti_GetSize(h);
+    ti_Close(h);
+    return p;
+}
+
+static bool api_set_theme_wallpaper(int theme, int wallpaper)
+{
+    return settings_pair_theme_wallpaper(theme, wallpaper);
+}
+
 static bool api_apply_wallpaper(int index)
 {
     return settings_select_wallpaper(index);
@@ -192,7 +214,8 @@ static const atmos_api_t api = {
     api_register_app, api_register_theme, api_request_redraw, api_close_window,
     api_apply_theme,                    /* appended last: mods built before it never read it */
     ATMOS_API_MINOR,                    /* 1.1: only 0x11 mods (never loaded by 1.0 shells) read these */
-    api_register_wallpaper, api_apply_wallpaper, wallpapers_draw_buffer
+    api_register_wallpaper, api_apply_wallpaper, wallpapers_draw_buffer, api_var_data,
+    api_set_theme_wallpaper
 };
 
 /* ---------- crash guard ----------
@@ -334,7 +357,8 @@ static void load_mod(const char *name)
     mem_size = (size_t)(uintptr_t)hdr.bss_end;
     count    = hdr.reloc_count;
     if (image < sizeof(hdr) || mem_size < image || mem_size > MODS_MAX_MEM ||
-        size != image + count * 2 ||                /* truncated or padded */
+        size < image + count * 2 ||                 /* truncated */
+        (hdr.api == 0x01 && size != image + count * 2) ||   /* 1.0: padded = damaged */
         entry < sizeof(hdr) || entry >= image)
         goto bad;
     for (i = 0; i < ATMOS_MOD_NAME_MAX && hdr.name[i]; i++)

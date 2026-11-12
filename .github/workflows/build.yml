@@ -153,7 +153,7 @@ jobs:
           mkdir -p "dist/extra mods"
           cp bin/atmOS.*.8xv dist/
           cp bin/ATMOS.8xp bin/clibs.8xg readme.txt dist/
-          cp mods/wallpapers/bin/ATMWALL.8xv "dist/extra mods/"
+          cp mods/wallpapers/bin/WP*.8xv "dist/extra mods/"
 
           ls -lh dist/
           ls -lh "dist/extra fonts/" "dist/extra mods/"
