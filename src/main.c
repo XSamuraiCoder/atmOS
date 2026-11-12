@@ -103,7 +103,7 @@ typedef struct {
 static entry_t entries[MAX_DOCK_ENTRIES] = {
     { "FILES",   3, 0, APP_FILES, 0, 0, -1 },
     { "NOTES",   1, 0, APP_NOTES, 0, 0, -1 },
-    { "SETTING", 7, 0, APP_SETTINGS, 0, 0, -1 },
+    { "SETTINGS", 7, 0, APP_SETTINGS, 0, 0, -1 },
 };
 static int entry_count = BUILTIN_ENTRY_COUNT;
 static bool dock_pin_has_icon[FILES_MAX_PINS];
