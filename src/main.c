@@ -127,6 +127,8 @@ static int  cur_x = GFX_LCD_WIDTH / 2;   /* pointer position */
 static int  cur_y = GFX_LCD_HEIGHT / 2;
 static char status[24] = OS_NAME;
 static int dock_focus = -1;
+static int8_t dock_hold_dir = 0;      /* dock-focus nav: arrow being held (0 = none) */
+static uint8_t dock_hold;             /* dock-focus nav: held-key repeat counter */
 
 /* ---------- helpers ---------- */
 static uint8_t lerp8(uint8_t a, uint8_t b, int i, int n)
@@ -852,6 +854,18 @@ static void mark_rect(int x0, int y0, int x1, int y1)
     }
 }
 
+/* Only the dock band changed (icon highlight and/or tooltip): repaint just
+ * that strip. A full `dirty = true` here would invalidate BOTH framebuffers
+ * and force two complete 320x240 redraws, which is what made the pointer feel
+ * laggy while it moved across the taskbar. A flag (not a queued rect) so the
+ * repaint can never be dropped when a window repaint is also pending. */
+static bool dock_dirty[2];
+
+static void mark_dock(void)
+{
+    dock_dirty[0] = dock_dirty[1] = true;
+}
+
 /* ask the open app what changed in its window and queue just that */
 static void collect_app_dirty(void)
 {
@@ -903,6 +917,7 @@ static void render_frame(int hover, bool dirty)
     if (dirty) {
         slot[0].valid = slot[1].valid = false;
         window_dirty[0] = window_dirty[1] = false;
+        dock_dirty[0] = dock_dirty[1] = false;
         pending[0].n = pending[1].n = 0;
     }
 
@@ -910,6 +925,7 @@ static void render_frame(int hover, bool dirty)
         draw_scene_region(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT, hover);
         s->valid = true;
         window_dirty[draw_idx] = false;
+        dock_dirty[draw_idx] = false;
         pending[draw_idx].n = 0;
     } else {
         if (window_dirty[draw_idx]) {
@@ -923,6 +939,11 @@ static void render_frame(int hover, bool dirty)
             for (i = 0; i < p->n; i++)
                 draw_scene_region(p->r[i][0], p->r[i][1], p->r[i][2], p->r[i][3], hover);
             p->n = 0;
+        }
+        if (dock_dirty[draw_idx]) {
+            draw_scene_region(0, DOCK_Y - 22, GFX_LCD_WIDTH, GFX_LCD_HEIGHT,
+                              hover);
+            dock_dirty[draw_idx] = false;
         }
         draw_scene_region(s->x - 1, s->y - 1, s->x + CUR_W + 1, s->y + CUR_H + 1, hover);
     }
@@ -1010,10 +1031,13 @@ static void reset_shell_state(void)
     dock_focus = -1;
     memset(slot, 0, sizeof(slot));
     memset(window_dirty, 0, sizeof(window_dirty));
+    memset(dock_dirty, 0, sizeof(dock_dirty));
     memset(pending, 0, sizeof(pending));
     draw_idx = 0;
     memset(prev_keys, 0, sizeof(prev_keys));
     hold = 0;
+    dock_hold_dir = 0;
+    dock_hold = 0;
 }
 
 static void move_cursor(void)
@@ -1054,10 +1078,26 @@ static bool move_dock_focus(void)
 {
     int direction = 0;
     int previous = dock_focus;
+    uint16_t keys = kb_Data[7];
+    bool left = (keys & kb_Left) != 0;
+    bool right = (keys & kb_Right) != 0;
+    bool fire;
 
-    if (PRESSED(7, kb_Left)) direction = -1;
-    else if (PRESSED(7, kb_Right)) direction = 1;
-    if (!direction || entry_count <= 0) return false;
+    /* Held-key repeat (same feel as the Notes editor): fire on the press, then
+     * after ~20 frames once every 3 frames, so holding an arrow glides along
+     * the dock instead of needing one press per icon. */
+    if (left != right) {
+        int8_t dir = left ? -1 : 1;
+        if (dir != dock_hold_dir) { dock_hold_dir = dir; dock_hold = 0; }
+        if (dock_hold < 255) dock_hold++;
+        fire = dock_hold == 1 || (dock_hold > 20 && dock_hold % 3 == 0);
+        direction = dir;
+    } else {
+        dock_hold_dir = 0;
+        dock_hold = 0;
+        return false;
+    }
+    if (!fire || entry_count <= 0) return false;
 
     if (dock_focus < 0)
         dock_focus = direction > 0 ? 0 : entry_count - 1;
@@ -1153,7 +1193,7 @@ static int shell_main(void)
                     app_keys = apps[open_app].keys && apps[open_app].keys();
             }
             if (keyboard_focus) {
-                if (open_app < 0 && move_dock_focus()) dirty = true;
+                if (open_app < 0 && move_dock_focus()) mark_dock();
                 if (app_keys) dirty = true;
             } else if (app_keys) {
                 dirty = true;
@@ -1273,8 +1313,10 @@ static int shell_main(void)
                 if (settings_take_font_changed())
                     ui_text_apply();                /* text widths changed */
             }
-            if (hover != last_hover) dirty = true;
-            last_hover = hover;
+            if (hover != last_hover) {
+                mark_dock();     /* highlight + tooltip live in the dock band only */
+                last_hover = hover;
+            }
 
             render_frame(hover, dirty);
             if (!booted) {
