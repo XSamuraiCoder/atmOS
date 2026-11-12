@@ -35,6 +35,8 @@ bool settings_clock_24h(void);                  /* false = 12-hour with AM/PM */
 bool settings_show_battery(void);                /* menu bar battery indicator */
 bool settings_dock_labels(void);                /* tooltip with the app name over the dock */
 bool settings_keyboard_focus(void);             /* navigate controls without moving the pointer */
+int  settings_wallpaper(void);                  /* Wallpaper list index (wallpapers.h) */
+bool settings_select_wallpaper(int index);      /* make it active now: saved, repainted the same frame */
 bool settings_take_changed(void);               /* true once after a change: re-apply the palette */
 bool settings_take_font_changed(void);          /* true once after the font changed: redraw everything */
 

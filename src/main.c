@@ -28,6 +28,7 @@
 #include "notes.h"
 #include "settings.h"
 #include "mods.h"
+#include "wallpapers.h"
 #include "debug_stack.h"
 #include "ui_text.h"
 #ifndef SHELL_FLASH_APP
@@ -142,7 +143,10 @@ static void setup_palette(void)
 {
     const theme_t *th = settings_theme();
     int i;
-    for (i = 0; i < GRAD_STEPS; i++) {
+    /* an image / mod wallpaper owns the gradient slots: its own colors, not the theme's */
+    if (!wallpapers_uses_gradient(settings_wallpaper()))
+        wallpapers_setup_palette(settings_wallpaper());
+    else for (i = 0; i < GRAD_STEPS; i++) {
         rgb_t c = {
             lerp8(th->top.r, th->bottom.r, i, GRAD_STEPS),
             lerp8(th->top.g, th->bottom.g, i, GRAD_STEPS),
@@ -228,13 +232,22 @@ static void fill_round_rect(int x, int y, int w, int h, int r)
 }
 
 /* ---------- drawing ---------- */
-static void draw_wallpaper(void)
+/* only what touches [x0,x1) x [y0,y1) (already clamped to the screen; the clip is set) */
+static void draw_wallpaper(int x0, int y0, int x1, int y1)
 {
     int i, band = GFX_LCD_HEIGHT / GRAD_STEPS;
+    int wall = settings_wallpaper();
+
+    if (!wallpapers_uses_gradient(wall)) {
+        wallpapers_draw(wall, x0, y0, x1, y1);      /* picture: no theme gradient under it */
+        return;
+    }
     for (i = 0; i < GRAD_STEPS; i++) {
+        int top = i * band;
+        int bottom = (i == GRAD_STEPS - 1) ? GFX_LCD_HEIGHT : top + band;
+        if (bottom <= y0 || top >= y1) continue;
         gfx_SetColor(PAL_GRAD0 + i);
-        gfx_FillRectangle(0, i * band, GFX_LCD_WIDTH,
-                                 (i == GRAD_STEPS - 1) ? GFX_LCD_HEIGHT - i * band : band);
+        gfx_FillRectangle(x0, top, x1 - x0, bottom - top);
     }
 }
 
@@ -869,7 +882,7 @@ static void draw_scene_region(int x0, int y0, int x1, int y1, int hover)
 
     gfx_SetClipRegion(x0, y0, x1, y1);
     ui_text_bounds(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
-    draw_wallpaper();
+    draw_wallpaper(x0, y0, x1, y1);
     if (overlap(x0, y0, x1, y1, 0, DOCK_Y, GFX_LCD_WIDTH, GFX_LCD_HEIGHT))
         draw_dock(hover);
     if (open_app >= 0 && overlap(x0, y0, x1, y1, WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H))

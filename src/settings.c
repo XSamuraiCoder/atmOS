@@ -1,7 +1,7 @@
 /* settings.c - built-in Settings app for atmOS (TI-84 Plus CE)
  *
  * Three tabs keep every page short:
- *   Look     theme preset, wallpaper style, accent color, font
+ *   Look     theme preset, wallpaper (gradient style, picture or mod), accent color, font
  *   Taskbar  menu bar color, dock color, battery indicator, dock labels
  *   System   pointer speed, clock format, reset
  * Choices with many values are dropdown menus (click to open, click an item, Clear
@@ -17,6 +17,7 @@
 #include <string.h>
 #include "settings.h"
 #include "ui_text.h"
+#include "wallpapers.h"
 #ifndef SHELL_NO_FONTLIBC
 #include <fontlibc.h>
 #endif
@@ -66,8 +67,7 @@ static const settings_theme_t themes[THEME_COUNT] = {
 static struct { char name[16]; settings_theme_t t; } mod_themes[SETTINGS_MOD_THEME_MAX];
 static uint8_t mod_theme_count;
 
-#define WALL_COUNT 3
-static const char *const wall_names[WALL_COUNT] = { "Gradient", "Flat", "Reverse" };
+/* Wallpaper list (names, pictures, mod ones): wallpapers.h / wallpapers.c */
 
 /* menu bar / dock tints (light, so the dark text stays readable); index 0 = follow the theme */
 #define TINT_COUNT 7
@@ -99,7 +99,7 @@ static const char *const font_names[FONT_BUILTIN] = { "Default" };
 /* ---------- state ---------- */
 typedef struct {
     uint8_t theme;      /* index into built-ins + registered mod themes (see settings_theme_lookup) */
-    uint8_t wall;       /* 0 gradient, 1 flat, 2 reverse */
+    uint8_t wall;       /* 0 gradient, 1 flat, 2 reverse, then pictures and mod wallpapers */
     uint8_t accent;     /* 0 = theme, else accents[accent - 1] */
     uint8_t font;       /* FONT_*, or FONT_CUSTOM */
     uint8_t bar;        /* 0 = theme, else tints[bar - 1] */
@@ -380,7 +380,7 @@ static int find_custom(const char *var, uint8_t index)
 /* ---------- storage ---------- */
 static bool sane(const uint8_t *b)       /* b[1..10] = the ten settings */
 {
-    return b[1] < THEME_COUNT + SETTINGS_MOD_THEME_MAX && b[2] < WALL_COUNT && b[3] <= ACCENT_COUNT &&
+    return b[1] < THEME_COUNT + SETTINGS_MOD_THEME_MAX && b[2] < WALL_MAX && b[3] <= ACCENT_COUNT &&
            b[4] <= FONT_CUSTOM && b[5] <= TINT_COUNT && b[6] <= TINT_COUNT &&
            b[7] < 3 && b[8] < 2 && b[9] < 2 && b[10] < 2;
 }
@@ -395,7 +395,7 @@ static void load_prefs(void)
     if (h) {
         n = ti_Read(buf, 1, STORE_SIZE, h);
         if (n >= STORE_SIZE_V2 &&
-            (buf[0] == 2 || buf[0] == 3 || buf[0] == STORE_VERSION) && sane(buf)) {
+            buf[0] >= 2 && buf[0] <= 5 && sane(buf)) {   /* 5: a test build (v4 + 1 byte) */
             prefs.theme = buf[1];  prefs.wall = buf[2];  prefs.accent = buf[3];
             prefs.font = buf[4];   prefs.bar = buf[5];   prefs.dock = buf[6];
             prefs.speed = buf[7];  prefs.clock24 = buf[8];
@@ -405,7 +405,7 @@ static void load_prefs(void)
                 prefs.cvar[8] = 0;
                 prefs.cidx = buf[20];
             }
-            if (buf[0] == STORE_VERSION && n == STORE_SIZE && buf[21] < 2)
+            if (buf[0] >= STORE_VERSION && n >= STORE_SIZE && buf[21] < 2)
                 prefs.focus = buf[21];
         } else if (n >= 4 && buf[0] == 1 &&              /* old format: theme, speed, clock */
                    buf[1] < THEME_COUNT && buf[2] < 3 && buf[3] < 2) {
@@ -484,6 +484,7 @@ bool settings_clock_24h(void)                  { return prefs.clock24 != 0; }
 bool settings_show_battery(void)               { return prefs.battery != 0; }
 bool settings_dock_labels(void)                { return prefs.tips != 0; }
 bool settings_keyboard_focus(void)             { return prefs.focus != 0; }
+int  settings_wallpaper(void)                  { return prefs.wall; }
 
 bool settings_take_changed(void)
 {
@@ -524,7 +525,7 @@ static int drop_count(int id)
 {
     switch (id) {
     case W_THEME:  return settings_theme_count();
-    case W_WALL:   return WALL_COUNT;
+    case W_WALL:   return wallpapers_count();
     case W_ACCENT: return ACCENT_COUNT + 1;
     case W_FONT:   return FONT_BUILTIN + custom_count;
     default:       return TINT_COUNT + 1;           /* W_BAR, W_DOCK */
@@ -535,7 +536,7 @@ static const char *drop_item(int id, int i)
 {
     switch (id) {
     case W_THEME:  return settings_theme_name(i);
-    case W_WALL:   return wall_names[i];
+    case W_WALL:   return wallpapers_name(i);
     case W_FONT:   return i < FONT_BUILTIN ? font_names[i] : custom[i - FONT_BUILTIN].label;
     case W_ACCENT: return i == 0 ? "Theme" : accents[i - 1].name;
     default:       return i == 0 ? "Theme" : tints[i - 1].name;
@@ -1021,6 +1022,19 @@ bool settings_select_theme(int index)
     next.accent = 0;
     next.bar = 0;
     next.dock = 0;
+    apply(&next);
+    return true;
+}
+
+/* Wallpaper switch for the mod API (apply_wallpaper): saved and repainted like a Settings
+ * change; the theme and its other overrides stay as they are. */
+bool settings_select_wallpaper(int index)
+{
+    prefs_t next = prefs;
+
+    if (index < 0 || index >= wallpapers_count())
+        return false;
+    next.wall = (uint8_t)index;
     apply(&next);
     return true;
 }

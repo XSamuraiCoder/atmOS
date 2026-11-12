@@ -21,6 +21,7 @@
 #include "debug_stack.h"
 #include "mods.h"
 #include "settings.h"
+#include "wallpapers.h"
 #include "ui_text.h"
 
 #ifndef MODS_CALL_ENTRY
@@ -157,6 +158,27 @@ static bool api_apply_theme(int index)
     return settings_select_theme(index);
 }
 
+/* 1.1: wallpapers. Every pointer must lie inside a loaded mod, like an app's: draw() is called
+ * from every desktop repaint, so an unrelocated pointer would reset the calculator on the first
+ * frame. Name and palette are copied; draw stays a pointer into the mod. atmos_rgb_t and
+ * wallpaper_rgb_t are both three bytes r, g, b. */
+static int api_register_wallpaper(const atmos_wallpaper_t *wp)
+{
+    if (!wp || !wp->name || !wp->draw) return -1;
+    if (!ptr_in_mods(wp->name) || !ptr_in_mods((const void *)wp->draw) ||
+        (wp->colors && !ptr_in_mods(wp->palette))) {
+        rejected_count++;
+        return -1;
+    }
+    return wallpapers_register(wp->name, (const wallpaper_rgb_t *)wp->palette, wp->colors,
+                               wp->draw);
+}
+
+static bool api_apply_wallpaper(int index)
+{
+    return settings_select_wallpaper(index);
+}
+
 static void api_request_redraw(void) { redraw_requested = true; }
 static void api_close_window(void)   { close_requested = true; }
 
@@ -168,7 +190,9 @@ static const atmos_api_t api = {
     (volatile uint16_t *)0xF50010,              /* kb_Data */
     api_var_read, api_var_write, api_var_archive,
     api_register_app, api_register_theme, api_request_redraw, api_close_window,
-    api_apply_theme                     /* appended last: mods built before it never read it */
+    api_apply_theme,                    /* appended last: mods built before it never read it */
+    ATMOS_API_MINOR,                    /* 1.1: only 0x11 mods (never loaded by 1.0 shells) read these */
+    api_register_wallpaper, api_apply_wallpaper, wallpapers_draw_buffer
 };
 
 /* ---------- crash guard ----------
@@ -302,7 +326,7 @@ static void load_mod(const char *name)
     if (size < sizeof(hdr) ||
         ti_Read(&hdr, 1, sizeof(hdr), h) != sizeof(hdr) ||
         memcmp(hdr.signature, ATMOS_MOD_SIGNATURE, ATMOS_MOD_SIG_LEN) != 0 ||
-        hdr.api != ATMOS_API_VERSION)               /* not a mod, or for another API */
+        !ATMOS_MOD_API_SUPPORTED(hdr.api))          /* not a mod, or for another API */
         goto bad;
 
     entry    = (size_t)(uintptr_t)hdr.entry;

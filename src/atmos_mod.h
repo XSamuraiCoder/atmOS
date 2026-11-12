@@ -1,7 +1,7 @@
 #ifndef ATMOS_MOD_H
 #define ATMOS_MOD_H
 
-/* atmOS mod API (version 1)
+/* atmOS mod API (version 1.1)
  *
  * A mod is an AppVar (any name) that holds relocatable machine code. atmOS finds mods by content:
  * an AppVar whose data starts with the 32-byte header below, which begins with the text
@@ -15,12 +15,34 @@
  * load"; the mod's memory is then freed. Mods run inside the shell with full access, so a bug in
  * a mod can crash atmOS. Declare the header with ATMOS_MOD_HEADER and build with the mod Makefile
  * (it links the mod at address 0 and appends the relocation table).
+ *
+ * Versions. 1.0: apps and themes. 1.1: wallpapers (register_wallpaper / apply_wallpaper,
+ * draw_buffer, ATMOS_PAL_WALL) and api->minor.
+ * The header's api byte says which version a mod was built for: 0x01 for 1.0, 0x11 for 1.1.
+ * A 1.1 shell loads both. A 1.0 shell refuses 0x11 mods, so a mod built with this header only
+ * ever runs where every field of atmos_api_t below exists. To also run on 1.0 shells, build
+ * with -DATMOS_MOD_TARGET_V1_0 and leave the 1.1 fields alone.
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define ATMOS_API_VERSION 1
+#define ATMOS_API_VERSION 1             /* atmos_api_t.version: the major version (still 1) */
+#define ATMOS_API_MINOR   1             /* atmos_api_t.minor (1.1+) */
+
+/* Header api byte for major.minor: 1.0 stays 0x01 (what every 1.0 mod has), later minors are
+ * (major << 4) | minor, e.g. 0x11. */
+#define ATMOS_MOD_API_BYTE(major, minor) ((minor) ? (((major) << 4) | (minor)) : (major))
+#ifdef ATMOS_MOD_TARGET_V1_0
+#define ATMOS_MOD_API ATMOS_MOD_API_BYTE(1, 0)
+#else
+#define ATMOS_MOD_API ATMOS_MOD_API_BYTE(ATMOS_API_VERSION, ATMOS_API_MINOR)
+#endif
+
+/* Header api bytes this shell (and the installer) loads. */
+#define ATMOS_MOD_API_SUPPORTED(b) \
+    ((b) == 0x01 || (((b) >> 4) == ATMOS_API_VERSION && ((b) & 15) >= 1 && \
+                     ((b) & 15) <= ATMOS_API_MINOR))
 
 /* ---- mod file: 32-byte header, the image, then the relocation table ----
  * The mod is linked at address 0, so the pointers below are plain offsets from the start of the
@@ -35,7 +57,7 @@
 typedef struct atmos_mod_header {
     char        signature[ATMOS_MOD_SIG_LEN];       /* "atmOS mod: " (no terminator) */
     char        name[ATMOS_MOD_NAME_MAX + 1];       /* mod name, up to 8 characters + 0 */
-    uint8_t     api;                                /* ATMOS_API_VERSION */
+    uint8_t     api;                                /* ATMOS_MOD_API (0x01 = 1.0, 0x11 = 1.1) */
     const void *entry;                              /* mod_main: offset from the image start */
     const void *image_end;                          /* size of the loaded image in bytes */
     const void *bss_end;                            /* image + .bss: memory the mod needs */
@@ -52,7 +74,7 @@ _Static_assert(sizeof(atmos_mod_header_t) == 32, "atmos_mod_header_t must be 32 
     extern char mod_image_end[], mod_bss_end[];                                               \
     __attribute__((section(".modhdr"), used))                                                 \
     const atmos_mod_header_t atmos_mod_header = {                                             \
-        ATMOS_MOD_SIGNATURE, mod_name, ATMOS_API_VERSION,                                     \
+        ATMOS_MOD_SIGNATURE, mod_name, ATMOS_MOD_API,                                         \
         (const void *)(entry_fn), (const void *)mod_image_end,                                \
         (const void *)mod_bss_end, 0 }
 
@@ -65,8 +87,15 @@ enum {
     ATMOS_PAL_LABEL    = 20,   /* white */
     ATMOS_PAL_ACCENT   = 21,   /* theme accent */
     ATMOS_PAL_RED = 22, ATMOS_PAL_YELLOW = 23, ATMOS_PAL_GREEN = 24, ATMOS_PAL_BLUE = 25,
-    ATMOS_PAL_PURPLE = 26, ATMOS_PAL_CYAN = 27, ATMOS_PAL_ORANGE = 28, ATMOS_PAL_GRAY = 29
+    ATMOS_PAL_PURPLE = 26, ATMOS_PAL_CYAN = 27, ATMOS_PAL_ORANGE = 28, ATMOS_PAL_GRAY = 29,
+
 };
+
+/* 1.1: palette entry of a wallpaper's own color i (0..ATMOS_WALL_COLORS-1). While a mod
+ * wallpaper is active these entries hold the colors it registered; they are the theme
+ * gradient's entries otherwise, so use them only inside the wallpaper's draw(). */
+#define ATMOS_WALL_COLORS 24
+#define ATMOS_PAL_WALL(i) ((uint8_t)((i) < 16 ? (i) : 246 + (i) - 16))
 
 /* kb[row] bits, same layout as keypadc's kb_Data (the shell scans the keypad every frame). */
 #define ATMOS_KB_ENTER_ROW 6
@@ -95,6 +124,27 @@ typedef struct atmos_theme {
     atmos_rgb_t dock;                  /* dock (keep light) */
     atmos_rgb_t accent;                /* theme accent */
 } atmos_theme_t;
+
+/* 1.1: a wallpaper. It appears in Settings > Look > Wallpaper after the built-in ones
+ * (Gradient, Flat, Reverse); register_wallpaper returns its index, which
+ * apply_wallpaper accepts. Registering the same name twice returns the existing index.
+ *
+ * A wallpaper brings its own colors and does not use the theme: up to ATMOS_WALL_COLORS colors
+ * (copied at registration) are loaded into ATMOS_PAL_WALL(0..colors-1) while it is active.
+ * draw() must paint EVERY pixel of the screen region [x0,x1) x [y0,y1) - nothing is drawn
+ * under it - and the clip is set to that region. The shell repaints the desktop in small
+ * pieces (every pointer move repaints the pixels under the old pointer), so draw() is called
+ * very often: touch only the region, keep it fast, and paint the same pixels every time (no
+ * animation or randomness - derive "random" positions from coordinates). The menu bar, dock
+ * and windows are drawn on top afterwards. Use the drawing calls, or for speed write the
+ * pixels yourself into api->draw_buffer() (320x240 bytes, row by row) - only inside the
+ * region, since the clip does not stop direct writes. */
+typedef struct atmos_wallpaper {
+    const char        *name;                            /* dropdown label (up to 15 characters) */
+    const atmos_rgb_t *palette;                         /* the wallpaper's colors */
+    uint8_t            colors;                          /* how many (0..ATMOS_WALL_COLORS) */
+    void (*draw)(int x0, int y0, int x1, int y1);
+} atmos_wallpaper_t;
 
 /* An app is a dock icon plus a window. Every hook is optional except draw.
  * Coordinates handed to draw() are the window's content origin on the screen;
@@ -144,6 +194,14 @@ typedef struct atmos_api {
                                                      * make theme[index] active immediately -
                                                      * saved in SHLSET and applied the same
                                                      * frame; false when index is invalid */
+
+    /* ---- 1.1 ---- (a 1.0 shell never loads a 0x11 mod, so these are always there for one) */
+    uint8_t minor;                                   /* ATMOS_API_MINOR */
+    int  (*register_wallpaper)(const atmos_wallpaper_t *wp);  /* index (copied), or -1 when full */
+    bool (*apply_wallpaper)(int index);              /* make it active now (saved in SHLSET), any
+                                                     * index of the list; false when invalid */
+    uint8_t *(*draw_buffer)(void);                   /* the 320x240 buffer being drawn, safe to
+                                                     * write (waits for the last screen flip) */
 } atmos_api_t;
 
 typedef bool (*atmos_mod_main_t)(const atmos_api_t *api);

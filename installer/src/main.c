@@ -61,7 +61,10 @@ enum {
     PORT_SETUP_FAILED,
     NO_SPACE,
     USER_ABORT,
-    ALREADY_INSTALLED
+    ALREADY_INSTALLED,
+    REPLACE_FAILED,     /* the installed copy could not be deleted */
+    RUN_AGAIN           /* old copy deleted, but its space is only freed by the garbage
+                           collect on exit: run the installer again to finish */
 };
 
 struct appvar {
@@ -72,6 +75,7 @@ struct appvar {
 
 static struct appvar appvars[MAX_APPVARS];
 static char app_name[10];
+static bool replacing;          /* an installed copy is replaced by this one (user agreed) */
 
 /* ---------- the shell's choices (copied from settings.c) ---------- */
 typedef struct { uint8_t r, g, b; } rgb_t;
@@ -268,6 +272,9 @@ static void stub_var_archive(const char *n)                   { (void)n; }
 static bool stub_register_app(const atmos_app_t *a)           { return a != NULL; }
 static void stub_void(void)                                   { }
 static bool stub_apply_theme(int i)                           { return i >= 0 && i < theme_total(); }
+static int  stub_register_wallpaper(const atmos_wallpaper_t *w) { (void)w; return -1; }
+static bool stub_apply_wallpaper(int i)                       { (void)i; return false; }
+static uint8_t *stub_draw_buffer(void)                        { return (uint8_t *)0xD52C00; } /* unused: no wallpapers here */
 
 static const atmos_api_t stub_api = {
     ATMOS_API_VERSION, 304, 186,
@@ -276,7 +283,9 @@ static const atmos_api_t stub_api = {
     (volatile uint16_t *)0xF50010,
     stub_var_read, stub_var_write, stub_var_archive,
     stub_register_app, stub_register_theme, stub_void, stub_void,
-    stub_apply_theme
+    stub_apply_theme,
+    ATMOS_API_MINOR,                    /* 1.1: mod wallpapers are not offered here, only themes */
+    stub_register_wallpaper, stub_apply_wallpaper, stub_draw_buffer
 };
 
 static void make_rec(uint8_t *rec, const char *name, size_t size)
@@ -365,7 +374,7 @@ static void run_mod_for_themes(const char *name)
     if (size < sizeof(hdr) ||
         ti_Read(&hdr, 1, sizeof(hdr), h) != sizeof(hdr) ||
         memcmp(hdr.signature, ATMOS_MOD_SIGNATURE, ATMOS_MOD_SIG_LEN) != 0 ||
-        hdr.api != ATMOS_API_VERSION)
+        !ATMOS_MOD_API_SUPPORTED(hdr.api))
         goto bad;
 
     entry    = (size_t)(uintptr_t)hdr.entry;
@@ -722,8 +731,27 @@ static bool appvar_exists(uint8_t i)
     return os_ChkFindSym(OS_TYPE_APPVAR, name, NULL, NULL);
 }
 
+/* The app's name from the first AppVar's header (the name in APPS), before anything else
+ * runs, so main can tell whether this version replaces an installed one. */
+static bool read_app_name(void)
+{
+    char name[10];
+    void *data;
+    const int namelen = sprintf(name, APPVAR_PREFIX "0");
+    uint8_t *d;
+
+    if (!os_ChkFindSym(OS_TYPE_APPVAR, name, NULL, &data)) return false;
+    d = data;
+    if (d < os_RamStart) d += 10 + namelen;
+    strncpy(app_name, (const char *)(d + 2 + APP_NAME_OFFSET), sizeof app_name);
+    app_name[sizeof(app_name) - 1] = 0;
+    return app_name[0] != 0;
+}
+
 static int do_install(void)
 {
+    bool installed;
+
     uint24_t app_size = 0;
     if (port_setup()) return PORT_SETUP_FAILED;
 
@@ -758,15 +786,27 @@ static int do_install(void)
         sprintf(name, APPVAR_PREFIX "%u", MAX_APPVARS);
         if (os_ChkFindSym(OS_TYPE_APPVAR, name, NULL, NULL)) return MISSING_VAR;
     }
-    /* An installed copy of the app is never removed by this installer; writing a
-     * second one after it would leave a stale duplicate. Stop and tell the user.
-     * (os_FindAppStart is valid here: port_setup() already accepted the OS.) */
-    if (os_FindAppStart(app_name)) return ALREADY_INSTALLED;
+    /* Replacing works like TIpy-asm's installer (and Cesium): find the installed copy with
+     * FindAppUp - which, unlike os_FindAppStart, skips copies that were deleted but not yet
+     * garbage collected - and DeleteApp it. Writing a second copy without deleting the first
+     * would leave a stale duplicate, so without the user's OK this stops. */
+    installed = find_app(app_name) != NULL;
+    if (installed && !replacing) return ALREADY_INSTALLED;
 
     appvar->size += sizeof(uint24_t);
     uint8_t *app_end = find_last_app();
     uint8_t *app_start = app_end - app_size - sizeof(uint24_t);
-    if (!check_variable_overlaps(app_start)) return NO_SPACE;
+    /* A deleted app keeps its flash until the archive is garbage collected, so the new copy
+     * goes below every app, deleted ones included. Space is checked BEFORE the old copy is
+     * deleted: with too little room the old one is deleted (the garbage collect on exit frees
+     * its space) and the user runs the installer once more - never left with no atmOS
+     * unless they chose to replace it. */
+    if (!check_variable_overlaps(app_start)) {
+        if (installed)
+            return delete_app(app_name) ? RUN_AGAIN : REPLACE_FAILED;
+        return NO_SPACE;
+    }
+    if (installed && !delete_app(app_name)) return REPLACE_FAILED;
 
     gfx_Begin();
     apply_theme();
@@ -818,6 +858,37 @@ static bool wait_key(void)
 }
 
 /* ---------- screens ---------- */
+/* atmOS is already installed: replace it with this version (settings, notes and mods are
+ * AppVars and stay), or stop. */
+static int screen_replace(void)
+{
+    int sel = 0, prev = -1;
+    while (kb_AnyKey()) kb_Scan();
+    while (1) {
+        if (sel != prev) {
+            apply_theme();
+            draw_wallpaper();
+            draw_panel(16, 30, 288, 180);
+            center_text("atmOS is already installed", 48, PAL_TEXT);
+            center_text(app_name, 66, PAL_ACCENT);
+            center_text("Settings, notes and mods are kept.", 84, PAL_GRAY);
+            draw_button(40, 104, 240, 26, "Replace with this version", sel == 0);
+            draw_button(40, 140, 240, 26, "Cancel", sel == 1);
+            center_text("Arrows = choose  Enter = OK", 180, PAL_GRAY);
+            gfx_SwapDraw();
+            prev = sel;
+        }
+        kb_Scan();
+        if (kb_Data[7] & kb_Up)   sel = 0;
+        if (kb_Data[7] & kb_Down) sel = 1;
+        if (kb_Data[6] & kb_Clear) return USER_ABORT;
+        if (kb_Data[6] & kb_Enter) {
+            while (kb_AnyKey()) kb_Scan();
+            return sel == 0 ? SUCCESS : USER_ABORT;
+        }
+    }
+}
+
 static int screen_welcome(void)
 {
     int sel = 1, prev = -1;
@@ -988,7 +1059,7 @@ static void screen_result(int error, bool delete_after)
     draw_wallpaper();
     draw_panel(16, 40, 288, 160);
     if (error == SUCCESS) {
-        center_text("Successfully installed!", 70, PAL_GREEN);
+        center_text(replacing ? "Successfully updated!" : "Successfully installed!", 70, PAL_GREEN);
         center_text(app_name, 90, PAL_ACCENT);
         if (delete_after) {
             for (uint8_t i = 0; i < MAX_APPVARS; ++i) {
@@ -1011,10 +1082,15 @@ static void screen_result(int error, bool delete_after)
         else if (error == NO_SPACE) msg = "Not enough archive space";
         else if (error == USER_ABORT) msg = "Cancelled by user";
         else if (error == ALREADY_INSTALLED) msg = "atmOS is already installed";
+        else if (error == REPLACE_FAILED) msg = "Could not remove the old atmOS";
+        else if (error == RUN_AGAIN) msg = "Old atmOS removed";
         center_text(msg, 100, PAL_TEXT);
-        if (error == ALREADY_INSTALLED) {
+        if (error == ALREADY_INSTALLED || error == REPLACE_FAILED) {
             center_text("Delete it in Mem Mgmt > Apps,", 118, PAL_GRAY);
             center_text("then run the installer again", 130, PAL_GRAY);
+        } else if (error == RUN_AGAIN) {
+            center_text("Its space is freed on exit:", 118, PAL_GRAY);
+            center_text("run the installer again", 130, PAL_GRAY);
         }
         center_text("Press any key", 140, PAL_GRAY);
     }
@@ -1036,10 +1112,16 @@ int main(int argc, char **argv)
     scan_mod_themes();                  /* BEFORE load_prefs: a saved theme may point at a
                                            mod-registered theme, as in settings.c */
     bool setup_done = load_prefs();     /* valid SHLSET: the installer follows it */
+    bool installed = read_app_name() && find_app(app_name) != NULL;   /* an update? */
 
     gfx_Begin();
     apply_theme();                      /* follows SHLSET when it exists */
     gfx_SetDrawBuffer();
+
+    if (installed) {
+        if (screen_replace() != SUCCESS) { error = USER_ABORT; goto end_gfx; }
+        replacing = true;
+    }
 
     /* First-time setup only when no valid SHLSET exists yet. When it exists, the
      * installer FOLLOWS those settings (its screens show the user's theme and font)

@@ -175,3 +175,96 @@ _delete_var:
 	call	ti.ChkFindSym
 	ret	c
 	jp	ti.DelVarArc
+
+	; ---- replacing an installed app (after TIpy-asm's installlib.asm, which follows Cesium) ----
+	; Apps are found by walking FindAppUp, as the APPS menu does. A deleted app stays in flash
+	; until the archive is garbage collected, and os_FindAppStart still finds it; FindAppUp
+	; does not. delete_app deletes the app at the address FindAppUp returns and sets the flag
+	; that makes the OS garbage collect (defragment) the archive when the installer exits.
+
+	.equ	ti.FindAppUp, 0x0210F4
+	.equ	ti.DeleteApp, 0x02126C
+	.equ	ti.ZeroOP3, 0x02038C
+	.equ	ti.OP3ToOP1, 0x0202D0
+	.equ	ti.OP1ToOP3, 0x0202AC
+	.equ	ti.OP3, 0xD0060E
+	.equ	ti.AppObj, 0x14
+
+	; void *find_app(const char *name) - the installed (not deleted) app's address, or NULL
+	.global _find_app
+	.type _find_app, @function
+_find_app:
+	pop	de
+	ex	(sp),hl
+	push	de
+	call	.L.find_app
+	ld	hl,0
+	ret	c
+	ex	de,hl
+	ret
+
+	; bool delete_app(const char *name) - true when the app was found and deleted
+	.global _delete_app
+	.type _delete_app, @function
+_delete_app:
+	pop	de
+	ex	(sp),hl
+	push	de
+	call	.L.find_app
+	ld	a,0
+	ret	c
+	push	ix
+	ex	de,hl			; the app's address, as Cesium passes it
+	call	ti.DeleteApp
+	pop	ix
+	ld	iy,ti.flags
+	set	3,(iy + $25)		; garbage collect the archive on exit
+	ld	a,1
+	ret
+
+	; hl = name (zero-terminated, up to 8 chars). Carry set = not installed; otherwise
+	; carry clear and de = the app's address from FindAppUp.
+.L.find_app:
+	ld	(.L.find_name),hl
+	push	ix
+	call	ti.ZeroOP3
+	ld	a,ti.AppObj
+	ld	(ti.OP3),a
+.L.find_next:
+	call	ti.OP3ToOP1
+	call	ti.FindAppUp
+	push	hl
+	push	de
+	call	ti.OP1ToOP3
+	pop	de
+	pop	hl
+	jr	c,.L.find_done		; no more apps
+	ld	hl,(.L.find_name)
+	ld	ix,ti.OP1 + 1
+	ld	b,8
+.L.find_cmp:
+	ld	a,(hl)
+	cp	a,(ix)
+	jr	z,.L.find_same
+	or	a,a			; our name ended where OP1 has another char:
+	jr	nz,.L.find_next		; a match only if OP1 pads with spaces
+	ld	a,(ix)
+	cp	a,' '
+	jr	nz,.L.find_next
+	jr	.L.find_found
+.L.find_same:
+	or	a,a
+	jr	z,.L.find_found		; both names ended together
+	inc	hl
+	inc	ix
+	djnz	.L.find_cmp
+.L.find_found:
+	or	a,a			; carry clear: found
+.L.find_done:
+	pop	ix
+	ld	iy,ti.flags
+	ret
+
+	.section	.data
+.L.find_name:
+	db	0,0,0

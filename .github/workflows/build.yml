@@ -143,13 +143,20 @@ jobs:
       - name: Build app, installer, and libraries
         run: make package
 
+      - name: Build wallpapers mod
+        run: |
+          rm -rf mods/wallpapers/obj mods/wallpapers/bin
+          make -C mods/wallpapers
+
       - name: Collect build outputs
         run: |
+          mkdir -p "dist/extra mods"
           cp bin/atmOS.*.8xv dist/
           cp bin/ATMOS.8xp bin/clibs.8xg readme.txt dist/
+          cp mods/wallpapers/bin/ATMWALL.8xv "dist/extra mods/"
 
           ls -lh dist/
-          ls -lh "dist/extra fonts/"
+          ls -lh "dist/extra fonts/" "dist/extra mods/"
 
       - name: Create ZIP
         run: |
