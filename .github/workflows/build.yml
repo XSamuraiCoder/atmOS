@@ -143,17 +143,19 @@ jobs:
       - name: Build app, installer, and libraries
         run: make package
 
-      - name: Build wallpapers mod
+      - name: Build wallpaper mods
         run: |
-          rm -rf mods/wallpapers/obj mods/wallpapers/bin
-          make -C mods/wallpapers
+          for mod in dunes lake aurora leaves; do
+            rm -rf "mods/$mod/obj" "mods/$mod/bin"
+            make -C "mods/$mod"
+          done
 
       - name: Collect build outputs
         run: |
           mkdir -p "dist/extra wallpapers"
           cp bin/atmOS.*.8xv dist/
           cp bin/ATMOS.8xp bin/clibs.8xg readme.txt dist/
-          cp mods/wallpapers/bin/WP*.8xv "dist/extra wallpapers/"
+          cp mods/dunes/bin/*.8xv mods/lake/bin/*.8xv mods/aurora/bin/*.8xv mods/leaves/bin/*.8xv "dist/extra wallpapers/"
 
           ls -lh dist/
           ls -lh "dist/extra fonts/" "dist/extra wallpapers/"

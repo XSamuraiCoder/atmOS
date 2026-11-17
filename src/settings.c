@@ -17,6 +17,7 @@
 #include <string.h>
 #include "settings.h"
 #include "ui_text.h"
+#define fill_rr ui_fill_round   /* shared copy in ui_text.c */
 #include "wallpapers.h"
 #ifndef SHELL_NO_FONTLIBC
 #include <fontlibc.h>
@@ -679,11 +680,11 @@ static int widget_at(int x, int y)
     return -1;
 }
 
-typedef struct { int x, y, w, h, n; } dd_list_t;
+typedef struct { int x, y, w, h, n, cols, cw; } dd_list_t;   /* n = rows, cw = column width */
 
-/* A long list (the Font dropdown with several packs installed) can be taller than the
- * window once custom fonts raise item_h(); only the rows in [drop_scroll, drop_scroll +
- * visible) are drawn and hit-tested, and the scroll keeps open_hover on screen. */
+/* A list taller than the window (many themes, wallpapers or font packs, or a tall custom font)
+ * is laid out in columns side by side instead of scrolling: item i is in column i / rows,
+ * row i % rows. drop_scroll stays 0. */
 
 static int list_visible(void)
 {
@@ -693,27 +694,24 @@ static int list_visible(void)
 
 static void drop_clamp_scroll(void)
 {
-    int vis;
-
-    if (open_drop < 0) return;
-    vis = list_visible();
-    if (drop_scroll > drop_count(open_drop) - vis)
-        drop_scroll = drop_count(open_drop) - vis;
-    if (drop_scroll < 0) drop_scroll = 0;
-    if (open_hover >= 0) {                       /* keep the hovered item visible */
-        if (open_hover < drop_scroll) drop_scroll = open_hover;
-        if (open_hover >= drop_scroll + vis) drop_scroll = open_hover - vis + 1;
-    }
+    drop_scroll = 0;                            /* columns: every item is always visible */
 }
 
 static dd_list_t list_geom(int id)
 {
     dd_list_t l;
-    l.n = drop_count(id);
-    if (l.n > list_visible()) l.n = list_visible();
+    int total = drop_count(id);
+
+    l.n = total < list_visible() ? total : list_visible();
+    if (l.n < 1) l.n = 1;
+    l.cols = (total + l.n - 1) / l.n;
+    if (l.cols < 1) l.cols = 1;
+    l.cw = wd[id].w;
+    if (l.cols * l.cw > WIN_W - 8) l.cw = (WIN_W - 8) / l.cols;
+    l.w = l.cols * l.cw;
     l.h = l.n * item_h() + 6;
     l.x = wd[id].x;
-    l.w = wd[id].w;
+    if (l.x + l.w > WIN_W - 4) l.x = WIN_W - 4 - l.w;   /* extra columns grow to the left */
     l.y = wd[id].y;                         /* pops up over its button, like a menu */
     if (l.y + l.h > CONTENT_H - 2) l.y = CONTENT_H - 2 - l.h;
     if (l.y < 2) l.y = 2;
@@ -734,16 +732,18 @@ static int list_item_at(int x, int y)
     if (open_drop < 0) return -1;
     l = list_geom(open_drop);
     if (x < l.x || x >= l.x + l.w || y < l.y + 3 || y >= l.y + 3 + l.n * item_h()) return -1;
-    return drop_scroll + (y - l.y - 3) / item_h();
+    {
+        int i = (x - l.x) / l.cw * l.n + (y - l.y - 3) / item_h();
+        return i < drop_count(open_drop) ? i : -1;
+    }
 }
 
 static void mark_item(int i)
 {
     dd_list_t l;
     if (open_drop < 0 || i < 0) return;
-    if (i < drop_scroll || i >= drop_scroll + list_visible()) return;
     l = list_geom(open_drop);
-    mark(l.x, l.y + 3 + (i - drop_scroll) * item_h(), l.w, item_h());
+    mark(l.x + i / l.n * l.cw, l.y + 3 + i % l.n * item_h(), l.cw, item_h());
 }
 /* ---------- drawing ---------- */
 static void text_color(uint8_t fg)
@@ -753,15 +753,6 @@ static void text_color(uint8_t fg)
     gfx_SetTextTransparentColor(255);
 }
 
-static void fill_rr(int x, int y, int w, int h, int r)
-{
-    gfx_FillRectangle(x + r, y, w - 2 * r, h);
-    gfx_FillRectangle(x, y + r, w, h - 2 * r);
-    gfx_FillCircle(x + r,         y + r,         r);
-    gfx_FillCircle(x + w - r - 1, y + r,         r);
-    gfx_FillCircle(x + r,         y + h - r - 1, r);
-    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
-}
 
 static bool touches(int ax0, int ay0, int ax1, int ay1,
                     int bx0, int by0, int bx1, int by1)
@@ -846,19 +837,20 @@ static void draw_list(int x, int y)
     gfx_SetColor(PAL_LABEL);
     fill_rr(x + l.x, y + l.y, l.w, l.h, 5);
 
-    for (i = drop_scroll; i < drop_scroll + l.n; i++) {
-        int iy = y + l.y + 3 + (i - drop_scroll) * item_h();
+    for (i = 0; i < total; i++) {
+        int ix = x + l.x + i / l.n * l.cw;          /* column-major */
+        int iy = y + l.y + 3 + i % l.n * item_h();
         int sw = drop_swatch(open_drop, i);
-        int tx = x + l.x + 16;
+        int tx = ix + 16;
         bool hot = i == open_hover;
 
         if (hot) {
             gfx_SetColor(PAL_ACCENT);
-            gfx_FillRectangle(x + l.x + 3, iy, l.w - 6, item_h());
+            gfx_FillRectangle(ix + 3, iy, l.cw - 6, item_h());
         }
         if (i == cur) {                             /* current value */
             gfx_SetColor(hot ? PAL_LABEL : PAL_ACCENT);
-            gfx_FillCircle(x + l.x + 9, iy + item_h() / 2, 2);
+            gfx_FillCircle(ix + 9, iy + item_h() / 2, 2);
         }
         if (sw >= 0) {
             gfx_SetColor((uint8_t)sw);
@@ -867,14 +859,6 @@ static void draw_list(int x, int y)
         }
         text_color(hot ? PAL_LABEL : PAL_TEXT);
         ui_print(drop_item(open_drop, i), tx, iy + (item_h() - 8) / 2);
-    }
-
-    if (total > l.n) {                              /* scrolled: position bar */
-        int bar_h = l.h * l.n / total;
-        int bar_y = y + l.y + (l.h - bar_h) * drop_scroll / (total - l.n);
-        if (bar_h < 8) bar_h = 8;
-        gfx_SetColor(PAL_BAR_LINE);
-        gfx_FillRectangle(x + l.x + l.w - 3, bar_y, 2, bar_h);
     }
 }
 
@@ -1209,20 +1193,17 @@ bool settings_focus_keys(void)
     bool right = focus_repeat(&focus_held[3], (keys & kb_Right) != 0);
 
     if (open_drop >= 0) {
-        int next = open_hover;
+        int next = open_hover, rows = list_geom(open_drop).n;
         if (up && next > 0) next--;
         else if (down && next + 1 < drop_count(open_drop)) next++;
+        else if (left && next - rows >= 0) next -= rows;              /* previous column */
+        else if (right && next + rows < drop_count(open_drop)) next += rows;
         if (next != open_hover) {
-            int old_scroll = drop_scroll;
             mark_item(open_hover);
             open_hover = next;
-            drop_clamp_scroll();
-            if (drop_scroll != old_scroll)
-                mark_all();          /* the list scrolled: repaint it */
-            else
-                mark_item(next);     /* just the highlight moved */
+            mark_item(next);         /* just the highlight moved */
         }
-        return next != open_hover;
+        return up || down || left || right;
     }
 
     if (hover < 0 || !visible(hover)) {

@@ -26,6 +26,7 @@ typedef enum {
 size_t files_get_pins(files_pin_t *pins, size_t capacity);
 bool files_is_pinned(const char *name, uint8_t type);
 files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned);
+void files_move_pin(int from, int to);   /* reorder taskbar pins (drag on the dock) */
 bool files_flush_pins(void); /* persist queued changes; call only after returning to the OS stack */
 bool files_take_pins_changed(void);
 bool files_load_pin_icon(const files_pin_t *pin, uint8_t pixels[16 * 16]);
@@ -45,6 +46,11 @@ bool files_alpha(void);
 bool files_menu_active(void);
 bool files_cancel_menu(void);
 uint8_t files_program_kind(const char *name, uint8_t type);   /* how to run it: PROGRAM_* in program_kind.h */
+/* Dragging a program out of Files (content coordinates): the pinnable program / app tile under
+ * the point, filled into *pin; false when there is none. files_cancel_launch() drops a launch the
+ * press asked for (the press turned into a drag). */
+bool files_tile_pin_at(int x, int y, files_pin_t *pin);
+void files_cancel_launch(void);
 bool files_take_launch_request(const char **prgm, void **app_header,
                                uint8_t *program_kind, uint8_t *var_type);
 

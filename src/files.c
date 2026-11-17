@@ -25,6 +25,22 @@ files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
     return FILES_PIN_STORAGE_ERROR;
 }
 
+void files_move_pin(int from, int to)
+{
+    (void)from;
+    (void)to;
+}
+
+bool files_tile_pin_at(int x, int y, files_pin_t *pin)
+{
+    (void)x; (void)y; (void)pin;
+    return false;
+}
+
+void files_cancel_launch(void)
+{
+}
+
 bool files_flush_pins(void)
 {
     return true;
@@ -168,7 +184,9 @@ bool files_take_launch_request(const char **prgm, void **app_header,
 #include "debug_stack.h"
 #include "settings.h"
 #include "ui_text.h"
+#define fill_round ui_fill_round   /* shared copy in ui_text.c */
 #include "program_kind.h"
+#include "desktop.h"
 
 /* palette indices - must match the enum in main.c */
 enum {
@@ -314,7 +332,7 @@ extern void *flash_apps_find_app(const char *name);
 #define PIN_MENU_X ((WIN_W - 196) / 2)
 #define PIN_MENU_Y (TOOL_H + 48)
 #define PIN_MENU_W 196
-#define PIN_MENU_H 58
+#define PIN_MENU_H 78                   /* 3 rows of 20 + the notice line */
 
 #if !defined(FILES_NO_FILEIOC) && !defined(FILES_NO_ICONS)
 static void setup_program_icon_palette(void);
@@ -417,6 +435,20 @@ files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
     return FILES_PIN_OK;
 }
 
+void files_move_pin(int from, int to)
+{
+    files_pin_t p;
+    size_t count = files_get_pins(NULL, 0);
+
+    if (from < 0 || to < 0 || (size_t)from >= count || (size_t)to >= count || from == to) return;
+    p = pins_cache[from];
+    for (; from < to; from++) pins_cache[from] = pins_cache[from + 1];
+    for (; from > to; from--) pins_cache[from] = pins_cache[from - 1];
+    pins_cache[to] = p;
+    pins_dirty = true;
+    pins_changed = true;
+}
+
 bool files_flush_pins(void)
 {
     uint8_t record[PIN_RECORD_SIZE], header[6] = {
@@ -469,6 +501,22 @@ files_pin_result_t files_set_pin(const files_pin_t *pin, bool pinned)
     (void)pin;
     (void)pinned;
     return FILES_PIN_STORAGE_ERROR;
+}
+
+void files_move_pin(int from, int to)
+{
+    (void)from;
+    (void)to;
+}
+
+bool files_tile_pin_at(int x, int y, files_pin_t *pin)
+{
+    (void)x; (void)y; (void)pin;
+    return false;
+}
+
+void files_cancel_launch(void)
+{
 }
 
 bool files_flush_pins(void)
@@ -919,7 +967,6 @@ static uint8_t type_color(uint8_t type)
     }
 }
 
-static void fill_round(int x, int y, int w, int h, int r);
 
 static void draw_file_icon(uint8_t type, int x, int y)
 {
@@ -1034,6 +1081,28 @@ static bool pin_menu_pinnable(const file_var_t *v)
            v->type == OS_TYPE_APP;
 }
 
+bool files_tile_pin_at(int x, int y, files_pin_t *pin)
+{
+    int t, idx;
+    const file_var_t *v;
+
+    if (pin_menu_open || (t = tile_at(x, y)) < 0) return false;
+    idx = page * PER_PAGE + t;
+    if (idx >= view_count) return false;
+    v = &vars[view[idx]];
+    if (!pin_menu_pinnable(v)) return false;
+    strncpy(pin->name, v->name, sizeof(pin->name));
+    pin->name[sizeof(pin->name) - 1] = 0;
+    pin->type = v->type;
+    pin->program_kind = v->program_kind;
+    return true;
+}
+
+void files_cancel_launch(void)
+{
+    launch_request = -1;
+}
+
 static void pin_menu_activate(void)
 {
     file_var_t *v;
@@ -1044,13 +1113,28 @@ static void pin_menu_activate(void)
     if (!pin_menu_open || pin_menu_item < 0 ||
         pin_menu_item >= view_count)
         return;
-    if (pin_menu_choice != 0) {
+    if (pin_menu_choice == 2) {                     /* Cancel */
         pin_menu_open = false;
         pin_menu_notice = 0;
         return;
     }
 
     v = &vars[view[pin_menu_item]];
+    if (pin_menu_choice == 1) {                     /* desktop */
+        int d = desktop_find(v->name, v->type);
+        if (d >= 0) {
+            desktop_remove(d);
+        } else {
+            strncpy(pin.name, v->name, sizeof(pin.name));
+            pin.name[sizeof(pin.name) - 1] = 0;
+            pin.type = v->type;
+            pin.program_kind = v->program_kind;
+            if (!desktop_add(&pin, -1, -1)) { pin_menu_notice = 3; return; }
+        }
+        pin_menu_open = false;
+        pin_menu_notice = 0;
+        return;
+    }
     should_pin = !pin_menu_is_pinned;
     strncpy(pin.name, v->name, sizeof(pin.name));
     pin.name[sizeof(pin.name) - 1] = 0;
@@ -1094,8 +1178,8 @@ bool files_hover(int x, int y)
     if (pin_menu_open) {
         int choice = pin_menu_choice;
         if (x >= PIN_MENU_X && x < PIN_MENU_X + PIN_MENU_W &&
-            y >= PIN_MENU_Y + 5 && y < PIN_MENU_Y + 43)
-            pin_menu_choice = y < PIN_MENU_Y + 24 ? 0 : 1;
+            y >= PIN_MENU_Y + 5 && y < PIN_MENU_Y + 65)
+            pin_menu_choice = (y - PIN_MENU_Y - 5) / 20;
         return choice != pin_menu_choice;
     }
 
@@ -1136,8 +1220,8 @@ void files_click(int x, int y)
 {
     if (pin_menu_open) {
         if (x >= PIN_MENU_X && x < PIN_MENU_X + PIN_MENU_W &&
-            y >= PIN_MENU_Y + 8 && y < PIN_MENU_Y + 44) {
-            pin_menu_choice = y < PIN_MENU_Y + 27 ? 0 : 1;
+            y >= PIN_MENU_Y + 5 && y < PIN_MENU_Y + 65) {
+            pin_menu_choice = (y - PIN_MENU_Y - 5) / 20;
             pin_menu_activate();
         } else {
             pin_menu_open = false;
@@ -1205,7 +1289,8 @@ bool files_keys(void)
     pin_menu_prev_keys = keys;
     if (!pin_menu_open) return false;
     if (up || down) {
-        pin_menu_choice = up ? 0 : 1;
+        if (up && pin_menu_choice > 0) pin_menu_choice--;
+        if (down && pin_menu_choice < 2) pin_menu_choice++;
         fmark(PIN_MENU_X, PIN_MENU_Y, PIN_MENU_W, PIN_MENU_H);
         return true;
     }
@@ -1234,12 +1319,6 @@ static void fmark(int x, int y, int w, int h)
     fdq[fdq_n][0] = (int16_t)x;       fdq[fdq_n][1] = (int16_t)y;
     fdq[fdq_n][2] = (int16_t)(x + w); fdq[fdq_n][3] = (int16_t)(y + h);
     fdq_n++;
-}
-
-static void fmark_all(void)
-{
-    fdq_full = true;
-    fdq_n = 0;
 }
 
 static void fmark_tile(int idx)
@@ -1405,15 +1484,6 @@ bool files_cancel_menu(void)
 
 /* ---------- drawing ---------- */
 
-static void fill_round(int x, int y, int w, int h, int r)
-{
-    gfx_FillRectangle(x + r, y, w - 2 * r, h);
-    gfx_FillRectangle(x, y + r, w, h - 2 * r);
-    gfx_FillCircle(x + r, y + r, r);
-    gfx_FillCircle(x + w - r - 1, y + r, r);
-    gfx_FillCircle(x + r, y + h - r - 1, r);
-    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
-}
 
 static void num_str(uint24_t v, char *out)
 {
@@ -1609,12 +1679,20 @@ static void draw_arrow(int x, int y, int btn)
     gfx_FillTriangle(cx, cy, cx + tri * 5, cy - 4, cx + tri * 5, cy + 4);
 }
 
+static bool files_menu_on_desktop(void)
+{
+    return pin_menu_item >= 0 && pin_menu_item < view_count &&
+           desktop_find(vars[view[pin_menu_item]].name, vars[view[pin_menu_item]].type) >= 0;
+}
+
 static void draw_pin_menu(int x, int y)
 {
     const char *action = pin_menu_is_pinned
         ? "Unpin from taskbar" : "Pin to taskbar";
+    const char *desk = files_menu_on_desktop() ? "Remove from desktop" : "Add to desktop";
     const char *notice = pin_menu_notice == 1 ? "Taskbar is full"
-        : pin_menu_notice == 2 ? "Could not save pin" : NULL;
+        : pin_menu_notice == 2 ? "Could not save pin"
+        : pin_menu_notice == 3 ? "Desktop is full" : NULL;
     int menu_x = x + PIN_MENU_X, menu_y = y + PIN_MENU_Y;
 
     gfx_SetColor(PAL_TEXT);
@@ -1634,13 +1712,18 @@ static void draw_pin_menu(int x, int y)
     gfx_SetColor(pin_menu_choice == 1 ? PAL_ACCENT : PAL_BAR);
     gfx_FillRectangle(menu_x + 4, menu_y + 25, PIN_MENU_W - 8, 18);
     ui_text_color(pin_menu_choice == 1 ? PAL_LABEL : PAL_TEXT);
-    ui_print("Cancel", menu_x + 10, menu_y + 30);
+    ui_print(desk, menu_x + 10, menu_y + 30);
+
+    gfx_SetColor(pin_menu_choice == 2 ? PAL_ACCENT : PAL_BAR);
+    gfx_FillRectangle(menu_x + 4, menu_y + 45, PIN_MENU_W - 8, 18);
+    ui_text_color(pin_menu_choice == 2 ? PAL_LABEL : PAL_TEXT);
+    ui_print("Cancel", menu_x + 10, menu_y + 50);
 
     if (notice) {
         ui_text_color(PAL_ICON0);
         ui_print(notice,
             menu_x + (PIN_MENU_W - ui_text_width(notice)) / 2,
-            menu_y + 46);
+            menu_y + 66);
     }
 }
 

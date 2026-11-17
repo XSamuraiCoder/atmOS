@@ -12,6 +12,8 @@ static struct {
     wallpaper_rgb_t   palette[WALLPAPER_COLORS];
     uint8_t           colors;
     wallpaper_draw_fn draw;
+    wallpaper_tick_fn tick;                         /* 1.2: NULL = static */
+    uint8_t           period;                       /* frames between ticks */
 } mod_wall[WALL_MOD_MAX];
 static uint8_t mod_wall_count;
 
@@ -48,6 +50,8 @@ int wallpapers_register(const char *name, const wallpaper_rgb_t *palette, int co
     if (colors) memcpy(mod_wall[mod_wall_count].palette, palette, (size_t)colors * sizeof *palette);
     mod_wall[mod_wall_count].colors = (uint8_t)colors;
     mod_wall[mod_wall_count].draw = draw;
+    mod_wall[mod_wall_count].tick = NULL;
+    mod_wall[mod_wall_count].period = 1;
     return WALL_STYLE_COUNT + mod_wall_count++;
 }
 
@@ -69,6 +73,36 @@ void wallpapers_draw(int index, int x0, int y0, int x1, int y1)
 {
     if (x1 <= x0 || y1 <= y0 || wallpapers_uses_gradient(index)) return;
     mod_wall[index - WALL_STYLE_COUNT].draw(x0, y0, x1, y1);
+}
+
+bool wallpapers_set_anim(int index, wallpaper_tick_fn tick, int period)
+{
+    if (index < WALL_STYLE_COUNT || index >= wallpapers_count() || !tick) return false;
+    if (period < 1) period = 1;
+    if (period > 60) period = 60;
+    mod_wall[index - WALL_STYLE_COUNT].tick = tick;
+    mod_wall[index - WALL_STYLE_COUNT].period = (uint8_t)period;
+    return true;
+}
+
+bool wallpapers_animated(int index)
+{
+    return index >= WALL_STYLE_COUNT && index < wallpapers_count() &&
+           mod_wall[index - WALL_STYLE_COUNT].tick != NULL;
+}
+
+int wallpapers_anim_period(int index)
+{
+    return wallpapers_animated(index) ? mod_wall[index - WALL_STYLE_COUNT].period : 1;
+}
+
+int wallpapers_tick(int index, int r[][4], int max)
+{
+    int n;
+    if (!wallpapers_animated(index) || max <= 0) return 0;
+    n = mod_wall[index - WALL_STYLE_COUNT].tick(r, max);
+    if (n > max) n = max;                           /* a mod must not overrun the caller's list */
+    return n;
 }
 
 /* graphx's own drawing waits until the last gfx_SwapDraw has really happened; a mod writing

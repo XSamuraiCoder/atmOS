@@ -114,6 +114,13 @@ static uint8_t mod_theme_count;
 #define MOD_WALL_MAX 4                  /* WALL_MOD_MAX in the shell's wallpapers.h */
 static char mod_walls[MOD_WALL_MAX][MOD_NAME_LEN];
 static uint8_t mod_wall_count;
+/* ...and what it takes to draw them behind the setup screens: a mod that registers a wallpaper
+ * stays loaded (run_mod_for_themes does not free it), so its draw() can paint the preview. */
+#define MOD_WALL_COLORS 24
+static atmos_rgb_t mod_wall_pal[MOD_WALL_MAX][MOD_WALL_COLORS];
+static uint8_t mod_wall_ncolors[MOD_WALL_MAX];
+static void (*mod_wall_draw[MOD_WALL_MAX])(int, int, int, int);
+static bool mod_keep;                   /* set while a mod's mod_main registers a wallpaper */
 
 static int theme_total(void) { return THEME_COUNT + mod_theme_count; }
 
@@ -287,10 +294,15 @@ static int stub_register_theme(const atmos_theme_t *th)
 
 /* Everything else a mod_main may call does nothing: no drawing (GraphX is off), no variables
  * written, no apps. */
-static void stub_color(uint8_t pal)                           { (void)pal; }
-static void stub_rect(int x, int y, int w, int h)             { (void)x; (void)y; (void)w; (void)h; }
-static void stub_line(int x, int y, int len)                  { (void)x; (void)y; (void)len; }
-static void stub_circle(int x, int y, int r)                  { (void)x; (void)y; (void)r; }
+/* Drawing is real: mods only draw from a wallpaper's draw(), which the setup screens call with
+ * GraphX on (mod_main itself runs with GraphX off and draws nothing). */
+static void stub_color(uint8_t pal)                           { gfx_SetColor(pal); }
+static void stub_text_color(uint8_t pal)                      { gfx_SetTextFGColor(pal); }
+static void stub_fill_rect(int x, int y, int w, int h)        { gfx_FillRectangle(x, y, w, h); }
+static void stub_rect(int x, int y, int w, int h)             { gfx_Rectangle(x, y, w, h); }
+static void stub_hline(int x, int y, int len)                 { gfx_HorizLine(x, y, len); }
+static void stub_vline(int x, int y, int len)                 { gfx_VertLine(x, y, len); }
+static void stub_circle(int x, int y, int r)                  { gfx_FillCircle(x, y, r); }
 static void stub_print(const char *t, int x, int y)           { (void)t; (void)x; (void)y; }
 static int  stub_width(const char *t)                         { return (int)strlen(t) * 8; }
 static int  stub_var_read(const char *n, void *b, int m)      { (void)n; (void)b; (void)m; return -1; }
@@ -300,7 +312,11 @@ static bool stub_register_app(const atmos_app_t *a)           { return a != NULL
 static void stub_void(void)                                   { }
 static bool stub_apply_theme(int i)                           { return i >= 0 && i < theme_total(); }
 static bool stub_apply_wallpaper(int i)                       { (void)i; return false; }
-static uint8_t *stub_draw_buffer(void)                        { return (uint8_t *)0xD52C00; } /* never drawn here */
+static uint8_t *stub_draw_buffer(void)                        /* as the shell: flip finished */
+{
+    gfx_Wait();
+    return &gfx_vbuffer[0][0];
+}
 
 /* Mod wallpapers are listed by name (same index rules as wallpapers_register), so a mod theme's
  * paired wallpaper resolves to the same Wallpaper index the shell will use. */
@@ -313,8 +329,16 @@ static int stub_register_wallpaper(const atmos_wallpaper_t *w)
         if (strcmp(mod_walls[i], w->name) == 0) return WALL_COUNT + i;
     if (mod_wall_count >= MOD_WALL_MAX || strlen(w->name) >= MOD_NAME_LEN) return -1;
     strcpy(mod_walls[mod_wall_count], w->name);
+    mod_wall_ncolors[mod_wall_count] = w->colors > MOD_WALL_COLORS ? MOD_WALL_COLORS : w->colors;
+    if (w->palette)
+        memcpy(mod_wall_pal[mod_wall_count], w->palette,
+               mod_wall_ncolors[mod_wall_count] * sizeof(atmos_rgb_t));
+    mod_wall_draw[mod_wall_count] = w->draw;
+    mod_keep = true;                    /* its draw() lives in the mod's memory */
     return WALL_COUNT + mod_wall_count++;
 }
+
+static bool stub_set_wallpaper_anim(int w, atmos_wall_tick_t t, uint8_t p) { (void)w; (void)t; (void)p; return true; }
 
 static bool stub_set_theme_wallpaper(int theme, int wall)
 {
@@ -339,15 +363,16 @@ static const void *stub_var_data(const char *n, int *s)
 
 static const atmos_api_t stub_api = {
     ATMOS_API_VERSION, 304, 186,
-    stub_color, stub_rect, stub_rect, stub_line, stub_line, stub_circle,
-    stub_color, stub_print, stub_width,
+    stub_color, stub_fill_rect, stub_rect, stub_hline, stub_vline, stub_circle,
+    stub_text_color, stub_print, stub_width,
     (volatile uint16_t *)0xF50010,
     stub_var_read, stub_var_write, stub_var_archive,
     stub_register_app, stub_register_theme, stub_void, stub_void,
     stub_apply_theme,
     ATMOS_API_MINOR,                    /* 1.1: wallpapers by name only (nothing is drawn here) */
     stub_register_wallpaper, stub_apply_wallpaper, stub_draw_buffer, stub_var_data,
-    stub_set_theme_wallpaper
+    stub_set_theme_wallpaper,
+    stub_set_wallpaper_anim             /* 1.2: shown still here (its first frame) */
 };
 
 static void make_rec(uint8_t *rec, const char *name, size_t size)
@@ -474,8 +499,9 @@ static void run_mod_for_themes(const char *name)
     ti_Close(h);
     h = 0;
 
+    mod_keep = false;
     ((atmos_mod_main_t)(uintptr_t)(mem + entry))(&stub_api);   /* its return value does not matter */
-    free(mem);
+    if (!mod_keep) free(mem);           /* a wallpaper mod stays: the screens draw with it */
     return;
 
 bad:
@@ -658,6 +684,15 @@ static void apply_theme(void)
     set_pal(PAL_RED,      255,  95,  86);
     set_pal(PAL_GREEN,     39, 201,  63);
     set_pal(PAL_GRAY,     142, 142, 147);
+
+    if (pf.wall >= WALL_COUNT && pf.wall < wall_total()) {   /* a background mod's own colors */
+        int w = pf.wall - WALL_COUNT;
+        for (i = 0; i < 216; i++)                            /* the shell's fixed color cube */
+            gfx_palette[30 + i] = gfx_RGBTo1555(i / 36 * 51, i / 6 % 6 * 51, i % 6 * 51);
+        for (i = 0; i < mod_wall_ncolors[w]; i++)
+            set_pal(i < 16 ? i : 246 + i - 16,
+                    mod_wall_pal[w][i].r, mod_wall_pal[w][i].g, mod_wall_pal[w][i].b);
+    }
 }
 
 /* ---------- drawing ---------- */
@@ -674,6 +709,12 @@ static void fill_round(int x, int y, int w, int h, int r)
 static void draw_wallpaper(void)
 {
     int band = GFX_LCD_HEIGHT / 16;
+    if (pf.wall >= WALL_COUNT && pf.wall < wall_total() && mod_wall_draw[pf.wall - WALL_COUNT]) {
+        /* a background mod (picture or animated): its own draw, as the shell would show it */
+        gfx_SetClipRegion(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
+        mod_wall_draw[pf.wall - WALL_COUNT](0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
+        return;
+    }
     for (int i = 0; i < 16; i++) {
         gfx_SetColor(PAL_GRAD0 + i);
         gfx_FillRectangle(0, i * band, GFX_LCD_WIDTH,

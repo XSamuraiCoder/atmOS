@@ -1,7 +1,7 @@
 #ifndef ATMOS_MOD_H
 #define ATMOS_MOD_H
 
-/* atmOS mod API (version 1.1)
+/* atmOS mod API (version 1.2)
  *
  * A mod is an AppVar (any name) that holds relocatable machine code. atmOS finds mods by content:
  * an AppVar whose data starts with the 32-byte header below, which begins with the text
@@ -18,23 +18,27 @@
  *
  * Versions. 1.0: apps and themes. 1.1: wallpapers (register_wallpaper / apply_wallpaper,
  * draw_buffer, ATMOS_PAL_WALL, ATMOS_PAL_CUBE), set_theme_wallpaper, var_data and api->minor.
- * The header's api byte says which version a mod was built for: 0x01 for 1.0, 0x11 for 1.1.
- * A 1.1 shell loads both. A 1.0 shell refuses 0x11 mods, so a mod built with this header only
- * ever runs where every field of atmos_api_t below exists. To also run on 1.0 shells, build
- * with -DATMOS_MOD_TARGET_V1_0 and leave the 1.1 fields alone.
+ * 1.2: animated wallpapers (set_wallpaper_anim, atmos_wall_tick_t).
+ * The header's api byte says which version a mod was built for: 0x01 for 1.0, 0x11 for 1.1,
+ * 0x12 for 1.2. A 1.2 shell loads all of them. An older shell refuses newer mods, so a mod built
+ * with this header only ever runs where every field of atmos_api_t below exists. To also run on
+ * older shells, build with -DATMOS_MOD_TARGET_V1_0 or -DATMOS_MOD_TARGET_V1_1 and leave the
+ * newer fields alone.
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #define ATMOS_API_VERSION 1             /* atmos_api_t.version: the major version (still 1) */
-#define ATMOS_API_MINOR   1             /* atmos_api_t.minor (1.1+) */
+#define ATMOS_API_MINOR   2             /* atmos_api_t.minor (1.1+) */
 
 /* Header api byte for major.minor: 1.0 stays 0x01 (what every 1.0 mod has), later minors are
  * (major << 4) | minor, e.g. 0x11. */
 #define ATMOS_MOD_API_BYTE(major, minor) ((minor) ? (((major) << 4) | (minor)) : (major))
-#ifdef ATMOS_MOD_TARGET_V1_0
+#if defined(ATMOS_MOD_TARGET_V1_0)
 #define ATMOS_MOD_API ATMOS_MOD_API_BYTE(1, 0)
+#elif defined(ATMOS_MOD_TARGET_V1_1)
+#define ATMOS_MOD_API ATMOS_MOD_API_BYTE(1, 1)
 #else
 #define ATMOS_MOD_API ATMOS_MOD_API_BYTE(ATMOS_API_VERSION, ATMOS_API_MINOR)
 #endif
@@ -58,7 +62,7 @@
 typedef struct atmos_mod_header {
     char        signature[ATMOS_MOD_SIG_LEN];       /* "atmOS mod: " (no terminator) */
     char        name[ATMOS_MOD_NAME_MAX + 1];       /* mod name, up to 8 characters + 0 */
-    uint8_t     api;                                /* ATMOS_MOD_API (0x01 = 1.0, 0x11 = 1.1) */
+    uint8_t     api;                                /* ATMOS_MOD_API (0x01 = 1.0, 0x11 = 1.1, 0x12 = 1.2) */
     const void *entry;                              /* mod_main: offset from the image start */
     const void *image_end;                          /* size of the loaded image in bytes */
     const void *bss_end;                            /* image + .bss: memory the mod needs */
@@ -103,6 +107,14 @@ enum {
  * ~240 colors (8bpp) for a picture. */
 #define ATMOS_PAL_CUBE(r, g, b) ((uint8_t)(30 + (r) * 36 + (g) * 6 + (b)))
 
+/* Color animation is up to the mod: while its wallpaper is active, a mod may rewrite its own
+ * entries ATMOS_PAL_WALL(0..colors-1) in the LCD palette directly, e.g. from its tick (return 0
+ * rectangles - a palette change shows at once, without repainting). The shell rewrites them from
+ * the registered colors whenever the palette is set up again (a theme or wallpaper change). */
+#define ATMOS_LCD_PALETTE ((volatile uint16_t *)0xE30200)      /* 256 entries, 1555 color */
+#define ATMOS_RGB1555(r, g, b) ((uint16_t)((((r) & 255) >> 3) << 10 | (((g) & 255) >> 3) << 5 | \
+                                            ((b) & 255) >> 3))     /* = graphx gfx_RGBTo1555 */
+
 /* kb[row] bits, same layout as keypadc's kb_Data (the shell scans the keypad every frame). */
 #define ATMOS_KB_ENTER_ROW 6
 #define ATMOS_KB_ENTER     (1u << 0)
@@ -144,13 +156,27 @@ typedef struct atmos_theme {
  * animation or randomness - derive "random" positions from coordinates). The menu bar, dock
  * and windows are drawn on top afterwards. Use the drawing calls, or for speed write the
  * pixels yourself into api->draw_buffer() (320x240 bytes, row by row) - only inside the
- * region, since the clip does not stop direct writes. */
+ * region, since the clip does not stop direct writes.
+ *
+ * 1.2 animation: draw() still paints the wallpaper's CURRENT state, the same pixels for every
+ * call until the state changes. The state changes only inside the wallpaper's tick (below). */
 typedef struct atmos_wallpaper {
     const char        *name;                            /* dropdown label (up to 15 characters) */
     const atmos_rgb_t *palette;                         /* the wallpaper's colors */
     uint8_t            colors;                          /* how many (0..ATMOS_WALL_COLORS) */
     void (*draw)(int x0, int y0, int x1, int y1);
 } atmos_wallpaper_t;
+
+/* 1.2: tick of an animated wallpaper, registered with set_wallpaper_anim. The shell calls it
+ * every `frames_per_tick` frames while that wallpaper is active. The tick advances the
+ * animation state and reports what changed: it writes up to `max` rectangles
+ * {x0, y0, x1, y1} (x1/y1 exclusive, screen coordinates; both where things were AND where they
+ * are now) into rects and returns how many. Return 0 when nothing changed and -1 for "repaint
+ * the whole screen". The shell then calls draw() for just those rectangles, with the menu bar,
+ * dock and windows drawn on top. Keep the tick fast and do not draw in it. draw() can run
+ * before the first tick, so the state must be valid from the start. */
+#define ATMOS_WALL_ANIM_RECTS 12       /* the most rectangles a tick may report (max <= this) */
+typedef int (*atmos_wall_tick_t)(int rects[][4], int max);
 
 /* An app is a dock icon plus a window. Every hook is optional except draw.
  * Coordinates handed to draw() are the window's content origin on the screen;
@@ -219,6 +245,15 @@ typedef struct atmos_api {
                                                      * the theme in Settings (or apply_theme) also
                                                      * picks the wallpaper, which the user can still
                                                      * change. Built-in themes cannot be paired. */
+
+    /* ---- 1.2 ---- (a shell older than 1.2 never loads a 0x12 mod) */
+    bool (*set_wallpaper_anim)(int wallpaper, atmos_wall_tick_t tick, uint8_t frames_per_tick);
+                                                    /* make a wallpaper this mod registered
+                                                     * animated: tick runs every frames_per_tick
+                                                     * frames (1..60; the shell runs up to ~60
+                                                     * frames a second, so 3 is ~20 steps/s).
+                                                     * False when the index is not a mod
+                                                     * wallpaper or tick is not inside the mod. */
 } atmos_api_t;
 
 typedef bool (*atmos_mod_main_t)(const atmos_api_t *api);

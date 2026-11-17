@@ -191,6 +191,17 @@ static const void *api_var_data(const char *name, int *size)
     return p;
 }
 
+/* 1.2: an animated wallpaper's tick is called from the main loop, so it must lie inside a loaded
+ * mod like draw() does (an unrelocated pointer would reset the calculator). */
+static bool api_set_wallpaper_anim(int wallpaper, atmos_wall_tick_t tick, uint8_t frames_per_tick)
+{
+    if (!tick || !ptr_in_mods((const void *)tick)) {
+        rejected_count++;
+        return false;
+    }
+    return wallpapers_set_anim(wallpaper, (wallpaper_tick_fn)tick, frames_per_tick);
+}
+
 static bool api_set_theme_wallpaper(int theme, int wallpaper)
 {
     return settings_pair_theme_wallpaper(theme, wallpaper);
@@ -213,9 +224,10 @@ static const atmos_api_t api = {
     api_var_read, api_var_write, api_var_archive,
     api_register_app, api_register_theme, api_request_redraw, api_close_window,
     api_apply_theme,                    /* appended last: mods built before it never read it */
-    ATMOS_API_MINOR,                    /* 1.1: only 0x11 mods (never loaded by 1.0 shells) read these */
+    ATMOS_API_MINOR,                    /* 1.1 and 1.2 fields: only 0x11 / 0x12 mods read these */
     api_register_wallpaper, api_apply_wallpaper, wallpapers_draw_buffer, api_var_data,
-    api_set_theme_wallpaper
+    api_set_theme_wallpaper,
+    api_set_wallpaper_anim              /* 1.2 */
 };
 
 /* ---------- crash guard ----------

@@ -148,3 +148,13 @@ bool ui_text_custom(void)                 { return false; }
 uint8_t ui_text_height(void)             { return 8; }
 
 #endif
+
+void ui_fill_round(int x, int y, int w, int h, int r)
+{
+    gfx_FillRectangle(x + r, y, w - 2 * r, h);
+    gfx_FillRectangle(x, y + r, w, h - 2 * r);
+    gfx_FillCircle(x + r,         y + r,         r);
+    gfx_FillCircle(x + w - r - 1, y + r,         r);
+    gfx_FillCircle(x + r,         y + h - r - 1, r);
+    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
+}

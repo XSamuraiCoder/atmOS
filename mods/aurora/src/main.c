@@ -1,7 +1,6 @@
-/* main.c - one picture wallpaper + its theme, as a self-contained atmOS mod (API v1.1).
+/* main.c - "Aurora": a picture wallpaper + its theme, as a self-contained atmOS mod.
  *
- * Built once per picture (see the Makefile): WPDUNES, WPLAKE and WPAURORA are each a complete
- * mod - install only the ones you want. Each registers:
+ * The WPAURORA AppVar is the whole mod - install only the backgrounds you want. It registers:
  *   - a wallpaper (Settings > Look > Wallpaper, after Gradient, Flat and Reverse), and
  *   - a theme of the same name (Settings > Look > Theme) with colors to match, paired with the
  *     wallpaper: picking the theme picks the picture; the wallpaper can still be changed.
@@ -21,20 +20,10 @@
 #include <stdint.h>
 #include "atmos_mod.h"
 
-/* PIC selects the build: -DPIC=0/1/2 from the Makefile. The AppVar name must match the
- * Makefile's (the mod finds its own picture data by it). */
-#if PIC == 0
-#define MOD_VAR   "WPDUNES"
-#define MOD_TITLE "Dunes"
-#elif PIC == 1
-#define MOD_VAR   "WPLAKE"
-#define MOD_TITLE "Lake"
-#elif PIC == 2
+/* The AppVar name must match NAME in the Makefile (the mod finds its own picture data
+ * by it). */
 #define MOD_VAR   "WPAURORA"
 #define MOD_TITLE "Aurora"
-#else
-#error "build with -DPIC=0, 1 or 2 (see the Makefile)"
-#endif
 
 bool mod_main(const atmos_api_t *api);
 ATMOS_MOD_HEADER(MOD_TITLE, mod_main);

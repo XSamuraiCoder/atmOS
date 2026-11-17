@@ -21,6 +21,10 @@
 
 typedef struct { uint8_t r, g, b; } wallpaper_rgb_t;
 typedef void (*wallpaper_draw_fn)(int x0, int y0, int x1, int y1);
+/* 1.2 animation: advance one step, write changed rects {x0,y0,x1,y1} (exclusive), return the
+ * count, 0 = nothing changed, -1 = whole screen. */
+typedef int (*wallpaper_tick_fn)(int r[][4], int max);
+#define WALL_ANIM_RECTS   12
 
 int  wallpapers_count(void);                       /* styles + registered mod ones */
 const char *wallpapers_name(int index);            /* "?" when out of range */
@@ -31,6 +35,11 @@ int  wallpapers_register(const char *name, const wallpaper_rgb_t *palette, int c
 void wallpapers_setup_palette(int index);          /* a mod wallpaper's colors; nothing for a style */
 /* Has a mod wallpaper paint [x0,x1) x [y0,y1) (clip set to it by the caller). */
 void wallpapers_draw(int index, int x0, int y0, int x1, int y1);
+/* 1.2: make mod wallpaper `index` animated (period = frames between ticks, 1..60). */
+bool wallpapers_set_anim(int index, wallpaper_tick_fn tick, int period);
+bool wallpapers_animated(int index);
+int  wallpapers_anim_period(int index);
+int  wallpapers_tick(int index, int r[][4], int max);   /* count clamped to max, or -1 */
 uint8_t *wallpapers_draw_buffer(void);             /* buffer graphx draws into, flip finished */
 
 #endif

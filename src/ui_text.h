@@ -24,6 +24,8 @@ void ui_text_apply(void);
 void ui_text_bounds(int x0, int y0, int x1, int y1);
 void ui_text_color(uint8_t fg);
 void ui_print(const char *s, int x, int y);
+/* filled rounded rectangle in the current graphx color (shared by every app) */
+void ui_fill_round(int x, int y, int w, int h, int r);
 int  ui_text_width(const char *s);
 bool ui_text_custom(void);              /* a custom font is active */
 

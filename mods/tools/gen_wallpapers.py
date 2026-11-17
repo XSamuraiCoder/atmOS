@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Paints the picture wallpaper mods (WPDUNES, WPLAKE, WPAURORA) and writes their data.
 
-    python tools/gen_wallpapers.py      (from mods/wallpapers)
+    python mods/tools/gen_wallpapers.py
 
 Every wallpaper is original art drawn here from code (no source images). Each one is rendered
 at 320x240, scaled to 160x120 (the shell shows it at 2x) and stored at 8 bits per pixel: every
 byte is a palette entry. A picture has ~240 colors: its own 24 (ATMOS_PAL_WALL(0..23), picked
 by median cut) plus the shell's fixed 6x6x6 cube (ATMOS_PAL_CUBE), Floyd-Steinberg dithered
-over all of them. Each wallpaper is one mod: the Makefile appends data/<name>.bin to the mod
-code, and the mod reads it in place from its archived AppVar, so the picture costs no RAM.
+over all of them. Each wallpaper is its own mod folder (mods/<name>): its Makefile appends
+data/<name>.bin to the mod code, and the mod reads it in place from its archived AppVar, so the picture costs no RAM.
 Outputs:
-    data/<name>.bin       "atmOSwp2", name (16 bytes, zero padded), 24 colors (r, g, b),
+    mods/<name>/data/<name>.bin   "atmOSwp2", name (16 bytes, zero padded), 24 colors (r, g, b),
                           theme colors (top, bottom, bar, bar_line, dock, accent: r, g, b each),
                           160*120 palette entries
-    previews/<name>.png   previews at screen size
+    mods/<name>/preview.png       preview at screen size
 Needs Pillow and numpy.
 """
 import os
@@ -183,7 +183,9 @@ def aurora():
     return img
 
 
-WALLPAPERS = [("Dunes", dunes), ("Lake", lake), ("Aurora", aurora)]
+# (name, painter, animated): an animated picture changes its own 24 colors at run time (the
+# Aurora mod shimmers them), so its bright parts - what moves - are drawn with those colors only.
+WALLPAPERS = [("Dunes", dunes, False), ("Lake", lake, False), ("Aurora", aurora, False)]
 
 
 # ---------------------------------------------------------------- output
@@ -198,19 +200,30 @@ def slot(i):
     return 30 + i - 24
 
 
-def reduce(img):
+BRIGHT = 70                               # animated pictures: max channel above this = "bright"
+
+
+def reduce(img, animated=False):
     im = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8), "RGB").resize((OW, OH), Image.LANCZOS)
-    own = im.quantize(colors=COLORS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    src = im
+    if animated:                          # own colors from the bright parts only
+        a = np.array(im)
+        bright = a[a.max(axis=2) > BRIGHT].reshape(1, -1, 3)
+        src = Image.fromarray(bright.astype(np.uint8), "RGB")
+    own = src.quantize(colors=COLORS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
     pal = own.getpalette()[:COLORS * 3]
     pal += [0] * (COLORS * 3 - len(pal))
     own_rgb = np.array(pal, np.float32).reshape(COLORS, 3)
+    if animated:                          # the last own color is star white, so stars can twinkle
+        own_rgb[COLORS - 1] = (248, 248, 255)
     colors = np.vstack([own_rgb, CUBE])                      # 240 colors
     work = np.array(im, np.float32)
     idx = np.zeros((OH, OW), np.uint8)
     for y in range(OH):                                      # Floyd-Steinberg over all 240
         for x in range(OW):
             old = work[y, x]
-            k = int(np.argmin(((colors - old) ** 2).sum(1)))
+            pool = colors[:COLORS] if animated and old.max() > BRIGHT else colors
+            k = int(np.argmin(((pool - old) ** 2).sum(1)))
             idx[y, x] = k
             err = old - colors[k]
             if x + 1 < OW: work[y, x + 1] += err * 7 / 16
@@ -222,20 +235,19 @@ def reduce(img):
 
 
 def main():
-    os.makedirs(os.path.join(ROOT, "previews"), exist_ok=True)
-    os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     slots = np.array([slot(i) for i in range(COLORS + len(CUBE))], np.uint8)
-    for name, fn in WALLPAPERS:
-        idx, own, colors = reduce(fn())
+    for name, fn, animated in WALLPAPERS:
+        idx, own, colors = reduce(fn(), animated)
         ident = name.lower()
         theme = bytes(c for rgb in THEMES[name] for c in rgb)
         data = (MAGIC + name.encode().ljust(16, b"\0") + own.tobytes() + theme +
                 slots[idx].tobytes())
-        with open(os.path.join(ROOT, "data", f"{ident}.bin"), "wb") as f:
+        os.makedirs(os.path.join(ROOT, ident, "data"), exist_ok=True)
+        with open(os.path.join(ROOT, ident, "data", f"{ident}.bin"), "wb") as f:
             f.write(data)
         prev = Image.fromarray(colors[idx], "RGB").resize((W, H), Image.NEAREST)
-        prev.save(os.path.join(ROOT, "previews", f"{ident}.png"))
-        print(f"data/{ident}.bin, {len(data)} bytes, "
+        prev.save(os.path.join(ROOT, ident, "preview.png"))
+        print(f"mods/{ident}/data/{ident}.bin, {len(data)} bytes, "
               f"{len(np.unique(idx))} colors used")
 
 

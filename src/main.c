@@ -29,8 +29,10 @@
 #include "settings.h"
 #include "mods.h"
 #include "wallpapers.h"
+#include "desktop.h"
 #include "debug_stack.h"
 #include "ui_text.h"
+#define fill_round_rect ui_fill_round   /* shared copy in ui_text.c */
 #ifndef SHELL_FLASH_APP
 #include <fileioc.h>      /* os_RunPrgm */
 #else
@@ -41,6 +43,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sys/timers.h>
 #include <string.h>
 
 #if __has_include("gfx/gfx.h")
@@ -112,15 +115,10 @@ static bool dock_pin_has_icon[FILES_MAX_PINS];
  * small window that ends at the OS stack guard). The macros keep every use as is. */
 typedef struct {
     uint8_t pin_sprites[FILES_MAX_PINS][2 + 16 * 16];
-#ifdef HAVE_ICONS
-    uint8_t builtin_sprites[BUILTIN_ENTRY_COUNT][2 + 16 * 16];
-#endif
+    uint8_t drag_sprite[2 + 16 * 16];  /* icon of a program dragged out of Files */
 } dock_mem_t;
 static dock_mem_t *dock_mem;
 #define dock_pin_sprites (dock_mem->pin_sprites)
-#ifdef HAVE_ICONS
-#define dock_builtin_sprites (dock_mem->builtin_sprites)
-#endif
 
 /* ---------- state ---------- */
 static int  cur_x = GFX_LCD_WIDTH / 2;   /* pointer position */
@@ -170,7 +168,6 @@ static void begin_graphics(void)
 {
     gfx_Begin();
 #ifdef HAVE_ICONS
-    gfx_SetPalette(global_palette, sizeof_global_palette, 0);
     gfx_SetTransparentColor(255);
 #endif
     setup_palette();
@@ -202,6 +199,7 @@ static void shell_flush(void)
 {
     files_flush_pins();     /* write + archive SHLPINS */
     notes_flush();          /* write + archive SHNOTES */
+    desktop_flush();        /* write + archive SHLDESK */
     settings_flush();       /* write + archive SHLSET */
 }
 
@@ -209,6 +207,7 @@ static void shell_flush(void)
 static void flush_pins_on_os_stack(void)
 {
     (void)files_flush_pins();
+    (void)desktop_flush();
 }
 
 static void flush_pins_before_launch(void)
@@ -220,18 +219,10 @@ static void flush_pins_before_launch(void)
 static void flush_pins_before_launch(void)
 {
     (void)files_flush_pins();
+    (void)desktop_flush();
 }
 #endif
 
-static void fill_round_rect(int x, int y, int w, int h, int r)
-{
-    gfx_FillRectangle(x + r, y, w - 2 * r, h);
-    gfx_FillRectangle(x, y + r, w, h - 2 * r);
-    gfx_FillCircle(x + r,         y + r,         r);
-    gfx_FillCircle(x + w - r - 1, y + r,         r);
-    gfx_FillCircle(x + r,         y + h - r - 1, r);
-    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
-}
 
 /* ---------- drawing ---------- */
 /* only what touches [x0,x1) x [y0,y1) (already clamped to the screen; the clip is set) */
@@ -691,29 +682,6 @@ static int hit_test(void)
 
 static gfx_sprite_t *const dock_icon[] = { ICON_FILES, ICON_NOTES, ICON_SETTINGS };
 
-static void resize_dock_icon(gfx_sprite_t *source, uint8_t *destination)
-{
-    int x, y;
-
-    destination[0] = 16;
-    destination[1] = 16;
-    for (y = 0; y < 16; y++) {
-        for (x = 0; x < 16; x++) {
-            int sx = x * source->width / 16;
-            int sy = y * source->height / 16;
-            destination[2 + y * 16 + x] =
-                source->data[sy * source->width + sx];
-        }
-    }
-}
-
-static void prepare_builtin_dock_icons(void)
-{
-    int i;
-    for (i = 0; i < BUILTIN_ENTRY_COUNT; i++)
-        if (dock_icon[i])
-            resize_dock_icon(dock_icon[i], dock_builtin_sprites[i]);
-}
 #endif
 
 static void draw_dock(int hover)
@@ -733,8 +701,7 @@ static void draw_dock(int hover)
         }
 #ifdef HAVE_ICONS
         if (i < BUILTIN_ENTRY_COUNT && dock_icon[i]) {
-            gfx_TransparentSprite(
-                (gfx_sprite_t *)dock_builtin_sprites[i], x, y);
+            gfx_TransparentSprite(dock_icon[i], x, y);   /* stored at 16x16 (src/gfx) */
         } else
 #endif
         if (i >= BUILTIN_ENTRY_COUNT &&
@@ -746,7 +713,7 @@ static void draw_dock(int hover)
             gfx_SetColor(PAL_ICON0 + entries[i].color);
             fill_round_rect(x, y, DOCK_ITEM, DOCK_ITEM, 7);
             text_color(PAL_LABEL);
-            ui_print(letter, x + (DOCK_ITEM - 8) / 2, y + (DOCK_ITEM - 8) / 2);
+            ui_print(letter, x + (DOCK_ITEM - ui_text_width(letter)) / 2, y + (DOCK_ITEM - 8) / 2);
         }
 
         if (i == open_entry) {   /* "running" dot */
@@ -754,6 +721,16 @@ static void draw_dock(int hover)
             gfx_FillCircle(x + DOCK_ITEM / 2, DOCK_Y + DOCK_H - 2, 1);
         }
     }
+}
+
+/* Height of the band above the dock the tooltip can cover. It grows with the font (a 16 px
+ * custom font makes a 22 px box, 4 px above it): every repaint of the tooltip area must use this,
+ * or the top of a tall tooltip is never cleaned up and leaves lines behind. */
+static int tooltip_band(void)
+{
+    int bh = (int)ui_text_height() + 6;
+    if (bh < 14) bh = 14;
+    return bh + 4;
 }
 
 static void draw_tooltip(int hover)
@@ -822,8 +799,22 @@ static void draw_cursor(void)
 #define CUR_W 12
 #define CUR_H 16
 
-typedef struct { bool valid; int x, y; } slot_t;
+typedef struct { bool valid, ghost; int x, y; } slot_t;   /* ghost: a drag icon was drawn */
 static slot_t slot[2];
+
+/* Desktop icons and dragging. Holding 2nd (or Enter) on a desktop icon or a pinned dock icon and
+ * moving the pointer drags it (the icon follows the pointer); letting go drops it. A press that
+ * does not move launches it, on release. */
+static int    desk_hover = -1;         /* desktop icon under the pointer (or keyboard focus) */
+static int    desk_focus = -1;         /* keyboard focus mode: focused desktop icon, -1 = dock */
+static bool   desk_key_press;          /* keyboard: 2nd / Enter is down on desk_focus */
+static bool   desk_key_moved;          /* ...and arrows moved the icon meanwhile (no launch) */
+static int8_t press_kind;              /* 0 none, 1 desktop icon, 2 pinned dock icon, 3 Files tile */
+static files_pin_t press_pin;          /* kind 3: the program being dragged out of Files */
+static bool   press_pin_icon;          /* kind 3: its icon is in dock_mem->drag_sprite */
+static int    press_index;             /* desktop icon index / dock entry index */
+static int    press_x, press_y;
+static bool   dragging;
 static bool window_dirty[2];
 static int draw_idx = 0;
 
@@ -866,6 +857,107 @@ static void mark_dock(void)
     dock_dirty[0] = dock_dirty[1] = true;
 }
 
+/* Animated mod wallpaper (API 1.2). The wallpaper's tick reports the rectangles that changed;
+ * each draw buffer keeps its own list (both must receive every change). This list is separate
+ * from `pending` on purpose: window_dirty overrides `pending`, but it only repaints the
+ * window, so a wallpaper change outside the window would be lost.
+ *
+ * Kept cheap: a rectangle is first clipped to where the wallpaper can be seen (not under the
+ * menu bar, the dock or an open window - repainting there redraws those for nothing), then
+ * merged into a queued rectangle it overlaps or touches when that wastes little area. A full
+ * list merges into the closest rectangle instead of falling back to a whole-screen repaint. */
+#define WALL_LIST_MAX 16
+#define WALL_PER_FRAME 6                /* rectangles repainted per frame (the rest wait a frame) */
+typedef struct { uint8_t n; uint16_t r[WALL_LIST_MAX][4]; } wall_list_t;
+static wall_list_t wall_pending[2];
+static uint8_t wall_frame;
+
+static int rect_area(int x0, int y0, int x1, int y1) { return (x1 - x0) * (y1 - y0); }   /* fits 24 bits */
+
+static void wall_list_add(wall_list_t *w, int x0, int y0, int x1, int y1)
+{
+    int i, best = -1;
+    int best_waste = 0;
+
+    for (i = 0; i < w->n; i++) {
+        uint16_t *q = w->r[i];
+        int ux0 = x0 < q[0] ? x0 : q[0], uy0 = y0 < q[1] ? y0 : q[1];
+        int ux1 = x1 > q[2] ? x1 : q[2], uy1 = y1 > q[3] ? y1 : q[3];
+        int waste = rect_area(ux0, uy0, ux1, uy1) - rect_area(x0, y0, x1, y1) -
+                     rect_area(q[0], q[1], q[2], q[3]);   /* < 0 when they overlap */
+        bool near = x0 <= q[2] + 2 && q[0] <= x1 + 2 && y0 <= q[3] + 2 && q[1] <= y1 + 2;
+        if (waste <= 0 || (near && waste <= 64)) { best = i; break; }   /* cheap merge */
+        if (best < 0 || waste < best_waste) { best = i; best_waste = waste; }
+    }
+    if (best >= 0 && (i < w->n || w->n >= WALL_LIST_MAX)) {   /* cheap, or the list is full */
+        uint16_t *q = w->r[best];
+        if (x0 < q[0]) q[0] = (uint16_t)x0;
+        if (y0 < q[1]) q[1] = (uint16_t)y0;
+        if (x1 > q[2]) q[2] = (uint16_t)x1;
+        if (y1 > q[3]) q[3] = (uint16_t)y1;
+        return;
+    }
+    w->r[w->n][0] = (uint16_t)x0; w->r[w->n][1] = (uint16_t)y0;
+    w->r[w->n][2] = (uint16_t)x1; w->r[w->n][3] = (uint16_t)y1;
+    w->n++;
+}
+
+static void mark_wall_rect(int x0, int y0, int x1, int y1)
+{
+    int b;
+    if (x0 < 0) x0 = 0;
+    if (y0 < MENU_H + 1) y0 = MENU_H + 1;          /* the menu bar (and its line) is opaque */
+    if (x1 > GFX_LCD_WIDTH)  x1 = GFX_LCD_WIDTH;
+    if (y1 > DOCK_Y) y1 = DOCK_Y;                   /* so is the dock band */
+    if (x1 <= x0 || y1 <= y0) return;
+    if (open_app >= 0 && x0 >= WIN_X + 8 && x1 <= WIN_X + WIN_W - 8 &&
+        y0 >= WIN_Y + 8 && y1 <= WIN_Y + WIN_H - 8)
+        return;                                     /* hidden behind the open window */
+    if (open_app < 0) {
+        /* A desktop icon is repainted whole or not at all: its name (in a custom font) is drawn
+         * whole while its label box would be clipped to the rectangle, so a leaf brushing an
+         * icon would redraw it half and half - seen as flicker. Grow to the icons it touches. */
+        int i, n = desktop_count(), r[4];
+        for (i = 0; i < n; i++) {
+            desktop_rect(i, r);
+            if (r[0] < x1 && x0 < r[2] && r[1] < y1 && y0 < r[3]) {
+                if (r[0] < x0) x0 = r[0];
+                if (r[1] < y0) y0 = r[1];
+                if (r[2] > x1) x1 = r[2];
+                if (r[3] > y1) y1 = r[3];
+            }
+        }
+    }
+    for (b = 0; b < 2; b++)
+        if (slot[b].valid)                          /* else a whole-screen repaint is queued */
+            wall_list_add(&wall_pending[b], x0, y0, x1, y1);
+}
+
+/* Once per frame: when the active wallpaper is animated and its period is up, step it and queue
+ * what it says changed. Returns true when the whole screen must be repainted. */
+static bool wall_anim_step(void)
+{
+    int wall = settings_wallpaper();
+    int r[WALL_ANIM_RECTS][4], n, i;
+
+    static int last_x, last_y;
+    static uint8_t skip;
+    bool moving = cur_x != last_x || cur_y != last_y;
+
+    last_x = cur_x;
+    last_y = cur_y;
+    if (!wallpapers_animated(wall)) { wall_frame = 0; return false; }
+    /* the pointer comes first: paused while dragging, half speed while the pointer moves */
+    if (dragging || (moving && (++skip & 1))) return false;
+    if (++wall_frame < wallpapers_anim_period(wall)) return false;
+    wall_frame = 0;
+    n = wallpapers_tick(wall, r, WALL_ANIM_RECTS);
+    if (n < 0) return true;
+    for (i = 0; i < n; i++)
+        mark_wall_rect(r[i][0], r[i][1], r[i][2], r[i][3]);
+    return false;
+}
+
 /* ask the open app what changed in its window and queue just that */
 static void collect_app_dirty(void)
 {
@@ -886,6 +978,44 @@ static bool overlap(int ax0, int ay0, int ax1, int ay1,
 }
 
 /* redraw the scene inside [x0,x1) x [y0,y1) only; parts that can't touch it are skipped */
+/* Draw wallpaper only where it can actually be seen.  The open app window is
+ * composited above the desktop, so repainting wallpaper underneath its body is
+ * wasted work (especially for animated wallpapers).  Split an intersecting
+ * dirty region into up to four non-overlapping strips around the window. */
+static void draw_visible_wallpaper(int x0, int y0, int x1, int y1)
+{
+    int wx0, wy0, wx1, wy1;
+
+    if (open_app < 0 ||
+        !overlap(x0, y0, x1, y1, WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H)) {
+        draw_wallpaper(x0, y0, x1, y1);
+        return;
+    }
+
+    wx0 = WIN_X;
+    wy0 = WIN_Y;
+    wx1 = WIN_X + WIN_W;
+    wy1 = WIN_Y + WIN_H;
+
+    /* Above and below the app window. */
+    if (y0 < wy0)
+        draw_wallpaper(x0, y0, x1, wy0 < y1 ? wy0 : y1);
+    if (y1 > wy1)
+        draw_wallpaper(x0, wy1 > y0 ? wy1 : y0, x1, y1);
+
+    /* Left and right strips alongside the window. */
+    {
+        int middle_y0 = y0 > wy0 ? y0 : wy0;
+        int middle_y1 = y1 < wy1 ? y1 : wy1;
+        if (middle_y1 > middle_y0) {
+            if (x0 < wx0)
+                draw_wallpaper(x0, middle_y0, x1 < wx0 ? x1 : wx0, middle_y1);
+            if (x1 > wx1)
+                draw_wallpaper(x0 > wx1 ? x0 : wx1, middle_y0, x1, middle_y1);
+        }
+    }
+}
+
 static void draw_scene_region(int x0, int y0, int x1, int y1, int hover)
 {
     if (x0 < 0) x0 = 0;
@@ -896,17 +1026,201 @@ static void draw_scene_region(int x0, int y0, int x1, int y1, int hover)
 
     gfx_SetClipRegion(x0, y0, x1, y1);
     ui_text_bounds(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
-    draw_wallpaper(x0, y0, x1, y1);
+    draw_visible_wallpaper(x0, y0, x1, y1);
+    if (open_app < 0 && overlap(x0, y0, x1, y1, 0, MENU_H, GFX_LCD_WIDTH, DOCK_Y))
+        desktop_draw(x0, y0, x1, y1, desk_hover, dragging && press_kind == 1 ? press_index : -1);
     if (overlap(x0, y0, x1, y1, 0, DOCK_Y, GFX_LCD_WIDTH, GFX_LCD_HEIGHT))
         draw_dock(hover);
     if (open_app >= 0 && overlap(x0, y0, x1, y1, WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H))
         draw_window(x0, y0, x1, y1);
     if (hover >= 0 && settings_dock_labels() &&
-        overlap(x0, y0, x1, y1, 0, DOCK_Y - 22, GFX_LCD_WIDTH, DOCK_Y))
+        overlap(x0, y0, x1, y1, 0, DOCK_Y - tooltip_band(), GFX_LCD_WIDTH, DOCK_Y))
         draw_tooltip(hover);
     if (y0 <= MENU_H)
         draw_menu_bar();
     gfx_SetClipRegion(0, 0, GFX_LCD_WIDTH, GFX_LCD_HEIGHT);
+}
+
+/* Files asked to run the program clicked twice */
+static void files_launch_pending(void)
+{
+    const char *prgm;
+    void *app_header;
+    uint8_t program_kind, var_type;
+
+    if (!files_take_launch_request(&prgm, &app_header, &program_kind, &var_type)) return;
+    flush_pins_before_launch();
+    if (app_header) {
+        end_graphics();
+        flash_apps_launch(app_header);
+    }
+#ifdef SHELL_FLASH_APP
+    end_graphics();
+    asm_runProgram_run(prgm, var_type, program_kind, program_runner_preferences);
+#else
+    run_program(prgm);
+#endif
+}
+
+/* the icon being dragged, centered on the pointer */
+static void draw_drag_icon(void)
+{
+    int x = cur_x - 8, y = cur_y - 8;
+
+    if (press_kind == 1) {
+        desktop_draw_icon(press_index, x, y);
+    } else if (press_kind == 3) {
+        if (press_pin_icon) {
+            gfx_TransparentSprite((gfx_sprite_t *)dock_mem->drag_sprite, x, y);
+        } else {
+            char letter[2] = { press_pin.name[0], 0 };
+            gfx_SetColor(PAL_ICON0 + (press_pin.type == FILES_TYPE_APP ? 4 : 3));
+            fill_round_rect(x, y, 16, 16, 5);
+            text_color(PAL_LABEL);
+            ui_print(letter, x + (16 - ui_text_width(letter)) / 2, y + 4);
+        }
+    } else if (dock_pin_has_icon[press_index - BUILTIN_ENTRY_COUNT]) {
+        gfx_TransparentSprite((gfx_sprite_t *)dock_pin_sprites[press_index - BUILTIN_ENTRY_COUNT], x, y);
+    } else {
+        char letter[2] = { entries[press_index].name[0], 0 };
+        gfx_SetColor(PAL_ICON0 + entries[press_index].color);
+        fill_round_rect(x, y, 16, 16, 5);
+        text_color(PAL_LABEL);
+        ui_print(letter, x + (16 - ui_text_width(letter)) / 2, y + 4);
+    }
+}
+
+static void mark_desk_icon(int i)
+{
+    int r[4];
+    if (i < 0 || i >= desktop_count()) return;
+    desktop_rect(i, r);
+    mark_wall_rect(r[0], r[1], r[2], r[3]);
+}
+
+/* the desktop icon under the pointer (none over a window, the dock or the menu bar) */
+static void update_desk_hover(void)
+{
+    int h = -1;
+    if (settings_keyboard_focus()) {
+        if (open_app < 0 && desk_focus < desktop_count()) h = desk_focus;
+    } else if (!dragging && !in_window() && cur_y >= MENU_H && cur_y < DOCK_Y) {
+        h = desktop_hit(cur_x, cur_y);
+    }
+    if (h == desk_hover) return;
+    mark_desk_icon(desk_hover);
+    desk_hover = h;
+    mark_desk_icon(h);
+}
+
+/* 2nd / Enter went down: start a press on a desktop icon or a pinned dock icon */
+static bool start_press(int hover)
+{
+    int pins = (int)files_get_pins(NULL, 0);
+
+    if (in_window()) return false;
+    if (desk_hover >= 0) {
+        press_kind = 1;
+        press_index = desk_hover;
+    } else if (hover >= BUILTIN_ENTRY_COUNT && hover < BUILTIN_ENTRY_COUNT + pins) {
+        press_kind = 2;
+        press_index = hover;
+    } else {
+        return false;
+    }
+    press_x = cur_x;
+    press_y = cur_y;
+    dragging = false;
+    return true;
+}
+
+static void launch_desk_icon(int i)
+{
+    const desk_icon_t *d = desktop_icon(i);
+    entry_t e;
+
+    if (!d) return;
+    memset(&e, 0, sizeof e);
+    strcpy(e.name, d->name);
+    e.app = -1;
+    e.mod = -1;
+    e.type = d->type;
+    e.program_kind = d->program_kind;
+    launch(&e);
+}
+
+/* dropped: move on the desktop, reorder on the dock, or cross between them */
+static void drop(int kind, int idx)
+{
+    bool on_dock = cur_y >= DOCK_Y;
+    files_pin_t pins[FILES_MAX_PINS];
+    int count = (int)files_get_pins(pins, FILES_MAX_PINS);
+
+    if (in_window()) return;                        /* back inside the window: nothing */
+    if (kind == 3) {                                /* a program out of Files */
+        if (on_dock) (void)files_set_pin(&press_pin, true);
+        else (void)desktop_add(&press_pin, cur_x, cur_y);
+        return;
+    }
+    if (kind == 1) {
+        const desk_icon_t *d = desktop_icon(idx);
+        if (!d) return;
+        if (on_dock) {                              /* desktop -> taskbar pin */
+            files_pin_t p;
+            strcpy(p.name, d->name);
+            p.type = d->type;
+            p.program_kind = d->program_kind;
+            (void)files_set_pin(&p, true);
+        } else {
+            desktop_move(idx, cur_x, cur_y);
+        }
+    } else if (on_dock) {                           /* reorder: the slot under the pointer */
+        int x0 = (GFX_LCD_WIDTH - dock_width(entry_count)) / 2 + DOCK_GAP / 2;
+        int to = (cur_x - x0) / (DOCK_ITEM + DOCK_GAP) - BUILTIN_ENTRY_COUNT;
+        if (cur_x < x0) to = 0;
+        if (to < 0) to = 0;
+        if (to >= count) to = count - 1;
+        files_move_pin(idx - BUILTIN_ENTRY_COUNT, to);
+    } else if (idx - BUILTIN_ENTRY_COUNT < count) { /* taskbar pin -> desktop (stays pinned) */
+        (void)desktop_add(&pins[idx - BUILTIN_ENTRY_COUNT], cur_x, cur_y);
+    }
+}
+
+/* once per frame while a press is on: start dragging after a few pixels, act on release.
+ * Returns true when the whole screen should be repainted. */
+static bool step_press(void)
+{
+    int kind = press_kind, idx = press_index;
+    bool moved;
+
+    if ((kb_Data[1] & kb_2nd) || (kb_Data[6] & kb_Enter)) {
+        if (!dragging && (abs(cur_x - press_x) > 3 || abs(cur_y - press_y) > 3)) {
+            dragging = true;
+            if (kind == 1) mark_desk_icon(idx);     /* it leaves its cell */
+            if (kind == 3) {                        /* a program out of Files: its icon */
+                dock_mem->drag_sprite[0] = dock_mem->drag_sprite[1] = 16;
+                press_pin_icon = press_pin.type != FILES_TYPE_APP &&
+                                 files_load_pin_icon(&press_pin, dock_mem->drag_sprite + 2);
+            }
+            mark_desk_icon(desk_hover);
+            desk_hover = -1;
+        }
+        return false;
+    }
+    moved = dragging;
+    press_kind = 0;
+    dragging = false;
+    if (!moved) {
+        if (kind == 1) launch_desk_icon(idx);
+        else if (kind == 3) files_launch_pending(); /* a second click on a tile */
+        else launch(&entries[idx]);
+    } else {
+        if (kind == 3) files_cancel_launch();       /* it was a drag, not a click */
+        drop(kind, idx);
+    }
+    if (files_take_pins_changed()) sync_dock_pins();
+    if (desktop_take_changed()) desktop_load_icons();
+    return true;
 }
 
 static void render_frame(int hover, bool dirty)
@@ -919,6 +1233,7 @@ static void render_frame(int hover, bool dirty)
         window_dirty[0] = window_dirty[1] = false;
         dock_dirty[0] = dock_dirty[1] = false;
         pending[0].n = pending[1].n = 0;
+        wall_pending[0].n = wall_pending[1].n = 0;
     }
 
     if (!s->valid) {
@@ -927,6 +1242,7 @@ static void render_frame(int hover, bool dirty)
         window_dirty[draw_idx] = false;
         dock_dirty[draw_idx] = false;
         pending[draw_idx].n = 0;
+        wall_pending[draw_idx].n = 0;
     } else {
         if (window_dirty[draw_idx]) {
             draw_scene_region(WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H,
@@ -941,13 +1257,33 @@ static void render_frame(int hover, bool dirty)
             p->n = 0;
         }
         if (dock_dirty[draw_idx]) {
-            draw_scene_region(0, DOCK_Y - 22, GFX_LCD_WIDTH, GFX_LCD_HEIGHT,
+            draw_scene_region(0, DOCK_Y - tooltip_band(), GFX_LCD_WIDTH, GFX_LCD_HEIGHT,
                               hover);
             dock_dirty[draw_idx] = false;
         }
-        draw_scene_region(s->x - 1, s->y - 1, s->x + CUR_W + 1, s->y + CUR_H + 1, hover);
+        {   /* animated wallpaper: what moved since this buffer was last drawn. At most
+             * WALL_PER_FRAME rectangles a frame; the rest wait for this buffer's next frame,
+             * so a step's work is spread out instead of making one frame long. */
+            wall_list_t *w = &wall_pending[draw_idx];
+            int i, k = w->n < WALL_PER_FRAME ? w->n : WALL_PER_FRAME;
+            for (i = 0; i < k; i++)
+                draw_scene_region(w->r[i][0], w->r[i][1], w->r[i][2], w->r[i][3], hover);
+            for (i = k; i < w->n; i++) {
+                w->r[i - k][0] = w->r[i][0]; w->r[i - k][1] = w->r[i][1];
+                w->r[i - k][2] = w->r[i][2]; w->r[i - k][3] = w->r[i][3];
+            }
+            w->n = (uint8_t)(w->n - k);
+        }
+        if (s->ghost)                               /* the drag icon around the old pointer */
+            draw_scene_region(s->x - 9, s->y - 9, s->x + CUR_W + 9, s->y + CUR_H + 9, hover);
+        else
+            draw_scene_region(s->x - 1, s->y - 1, s->x + CUR_W + 1, s->y + CUR_H + 1, hover);
     }
-    if (!settings_keyboard_focus()) draw_cursor();
+    s->ghost = false;
+    if (!settings_keyboard_focus()) {
+        if (dragging) { draw_drag_icon(); s->ghost = true; }
+        draw_cursor();
+    }
     s->x = cur_x;
     s->y = cur_y;
 
@@ -1040,13 +1376,29 @@ static void reset_shell_state(void)
     dock_hold = 0;
 }
 
+/* The pointer moves by real elapsed time (hardware timer 2 at 32768 Hz, started in shell_main:
+ * an app's clock() is not running), not a fixed step per
+ * frame: a frame that takes longer (an animated wallpaper step, a window repaint) then moves it
+ * a little further instead of making it lag and jump - that unevenness is what looks like
+ * stutter. A long gap (back from a program) is capped so the pointer never leaps. */
+#define PTR_TIMER 2
+#define TICKS_PER_SEC 32768
+static uint32_t ptr_last;
+
 static void move_cursor(void)
 {
     int dx = 0, dy = 0;
-    int32_t ramp = PTR_RAMP_MS * FRAME_HZ / 1000;    /* frames to reach top speed */
+    int32_t ramp = (int32_t)PTR_RAMP_MS * TICKS_PER_SEC / 1000;    /* ticks to reach top speed */
     int32_t vmin = (int32_t)PTR_MIN_PXS << PTR_SHIFT;
     int32_t vmax = (int32_t)PTR_MAX_PXS << PTR_SHIFT;
     int32_t speed, step, limit_x, limit_y;
+    uint32_t now = timer_Get(PTR_TIMER);
+    int32_t dt = (int32_t)(now - ptr_last);
+
+    ptr_last = now;
+    /* dt == 0: the timer is not running (a frame always takes longer than one tick), so fall
+     * back to the old fixed 60 Hz step; too long: capped */
+    if (dt <= 0 || dt > (int32_t)(TICKS_PER_SEC / 15)) dt = TICKS_PER_SEC / FRAME_HZ;
 
     if (kb_Data[7] & kb_Left)  dx--;
     if (kb_Data[7] & kb_Right) dx++;
@@ -1055,10 +1407,11 @@ static void move_cursor(void)
 
     if (!dx && !dy) { hold = 0; return; }
 
-    if (hold < ramp) hold++;
+    hold += dt;
+    if (hold > ramp) hold = ramp;
     speed = vmin + (vmax - vmin) * hold / ramp;      /* 1/256 px per second */
     speed = speed * ptr_scale[settings_pointer_speed()] / 10;   /* Settings: slow/normal/fast */
-    step = speed / FRAME_HZ;                         /* 1/256 px this frame */
+    step = speed * dt / (int32_t)TICKS_PER_SEC;      /* 1/256 px for the time that passed */
 
     pos_x += dx * step;
     pos_y += dy * step;
@@ -1106,6 +1459,107 @@ static bool move_dock_focus(void)
     return dock_focus != previous;
 }
 
+/* ---------- keyboard focus on the desktop ----------
+ * With no window open, Up from the dock moves focus to the nearest desktop icon; arrows then
+ * move between icons (nearest one that way) and Down below the last row goes back to the dock.
+ * 2nd / Enter launches on release; holding 2nd and pressing an arrow moves the icon a cell
+ * instead; Del removes it. */
+static int desk_icon_cx(int i)
+{
+    int r[4];
+    desktop_rect(i, r);
+    return (r[0] + r[2]) / 2;
+}
+
+static int desk_neighbor(int from, int dc, int dr)
+{
+    const desk_icon_t *a = desktop_icon(from);
+    int i, best = -1, best_score = 0, n = desktop_count();
+
+    for (i = 0; i < n; i++) {
+        const desk_icon_t *d = desktop_icon(i);
+        int pc = d->col - a->col, pr = d->row - a->row, primary, secondary, score;
+        if (i == from) continue;
+        primary = dc ? pc * dc : pr * dr;
+        if (primary <= 0) continue;
+        secondary = dc ? pr : pc;
+        if (secondary < 0) secondary = -secondary;
+        score = primary * 2 + secondary * 3;        /* prefer staying in the same row/column */
+        if (best < 0 || score < best_score) { best = i; best_score = score; }
+    }
+    return best;
+}
+
+static int nearest_dock_entry(int x)
+{
+    int i, best = 0, best_d = 1000, ex, ey;
+    for (i = 0; i < entry_count; i++) {
+        int d;
+        dock_item_pos(i, &ex, &ey);
+        d = abs(ex + DOCK_ITEM / 2 - x);
+        if (d < best_d) { best = i; best_d = d; }
+    }
+    return best;
+}
+
+/* arrows / held 2nd in keyboard focus mode with no window: true when the dock highlight changed */
+static bool desk_nav_keys(void)
+{
+    bool up = PRESSED(7, kb_Up), down = PRESSED(7, kb_Down);
+    bool left = PRESSED(7, kb_Left), right = PRESSED(7, kb_Right);
+    int dc = left ? -1 : right ? 1 : 0, dr = up ? -1 : down ? 1 : 0;
+    int n = desktop_count();
+
+    if (desk_focus >= n) desk_focus = n - 1;       /* an icon was removed */
+    if (desk_focus < 0) {                           /* in the dock */
+        if (up && n > 0) {
+            int ex, ey, i, best = -1, best_score = 0;
+            dock_item_pos(dock_focus < 0 ? 0 : dock_focus, &ex, &ey);
+            for (i = 0; i < n; i++) {               /* nearest icon, lower rows first */
+                int score = abs(desk_icon_cx(i) - ex) +
+                            (DESK_ROWS - 1 - desktop_icon(i)->row) * DESK_CELL_H;
+                if (best < 0 || score < best_score) { best = i; best_score = score; }
+            }
+            desk_focus = best;
+            dock_focus = -1;
+            return true;
+        }
+        return move_dock_focus();
+    }
+
+    if (desk_key_press) {                           /* 2nd held: arrows move the icon */
+        const desk_icon_t *d = desktop_icon(desk_focus);
+        int col = d->col + dc, row = d->row + dr;
+        if ((dc || dr) && col >= 0 && col < DESK_COLS && row >= 0 && row < DESK_ROWS) {
+            desktop_move(desk_focus, DESK_X0 + col * DESK_CELL_W + 1,
+                         DESK_Y0 + row * DESK_CELL_H + 1);
+            desk_key_moved = true;
+        }
+        return false;
+    }
+    if (dc || dr) {
+        int next = desk_neighbor(desk_focus, dc, dr);
+        if (next >= 0) {
+            desk_focus = next;
+        } else if (down) {                          /* below the icons: back to the dock */
+            dock_focus = nearest_dock_entry(desk_icon_cx(desk_focus));
+            desk_focus = -1;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* keyboard: 2nd / Enter released on a desktop icon */
+static bool desk_key_release(void)
+{
+    if (!desk_key_press || (kb_Data[1] & kb_2nd) || (kb_Data[6] & kb_Enter)) return false;
+    desk_key_press = false;
+    if (!desk_key_moved && desk_focus >= 0) launch_desk_icon(desk_focus);
+    desk_key_moved = false;
+    return true;
+}
+
 #ifndef SHELL_FLASH_APP
 int main(void);
 
@@ -1143,16 +1597,17 @@ static int shell_main(void)
 
     /* big tables come from the heap, not .bss: see files.c */
     if (!dock_mem) dock_mem = (dock_mem_t *)calloc(1, sizeof *dock_mem);
-    if (!dock_mem || !files_alloc() || !notes_alloc()) return 1;
+    if (!dock_mem || !files_alloc() || !notes_alloc() || !desktop_alloc()) return 1;
 
     reset_shell_state();
+    timer_Disable(PTR_TIMER);                        /* the pointer's clock (move_cursor) */
+    timer_Set(PTR_TIMER, 0);
+    timer_Enable(PTR_TIMER, TIMER_32K, TIMER_NOINT, TIMER_UP);
     settings_init();
     mods_load_all();                 /* "atmOS mod: " AppVars: apps + themes registered */
     begin_graphics();
-#ifdef HAVE_ICONS
-    prepare_builtin_dock_icons();
-#endif
     sync_dock_pins();                 /* built-ins + pins, then mod entries (via sync_dock_mods) */
+    desktop_load_icons();
 
     kb_Scan();                       /* so a held launch key isn't a click */
     save_keys();
@@ -1179,7 +1634,7 @@ static int shell_main(void)
         if (running) {
             bool keyboard_focus = settings_keyboard_focus();
             bool app_keys = false;
-            if (keyboard_focus && open_app < 0 && dock_focus < 0 &&
+            if (keyboard_focus && open_app < 0 && dock_focus < 0 && desk_focus < 0 &&
                 entry_count > 0) {
                 dock_focus = 0;
                 dirty = true;
@@ -1193,7 +1648,7 @@ static int shell_main(void)
                     app_keys = apps[open_app].keys && apps[open_app].keys();
             }
             if (keyboard_focus) {
-                if (open_app < 0 && move_dock_focus()) mark_dock();
+                if (open_app < 0 && desk_nav_keys()) mark_dock();
                 if (app_keys) {
                     /* Keyboard navigation must not force a full-screen
                      * repaint: let the app report just what changed. */
@@ -1208,6 +1663,7 @@ static int shell_main(void)
             if (open_app >= 0 && apps[open_app].tick && apps[open_app].tick())
                 dirty = true;
             if (bar_tick()) dirty = true;
+            if (wall_anim_step()) dirty = true;           /* animated mod wallpaper (API 1.2) */
             if (mods_take_redraw()) dirty = true;         /* a mod asked for a repaint */
             if (mods_take_close() && open_app >= 0) {     /* a mod asked to close */
                 close_window();
@@ -1235,7 +1691,24 @@ static int shell_main(void)
             hover = keyboard_focus
                 ? (open_app < 0 ? dock_focus : -1)
                 : hit_test();
-            if (open_app == APP_FILES && PRESSED(2, kb_Alpha) &&
+            update_desk_hover();
+            if (press_kind == 0 && !desk_key_press && desk_hover >= 0 && PRESSED(1, kb_Del)) {
+                desktop_remove(desk_hover);             /* Del over a desktop icon removes it */
+                desk_hover = -1;
+                dirty = true;
+            }
+            if (PRESSED(2, kb_Alpha) && press_kind == 0 &&
+                hover >= BUILTIN_ENTRY_COUNT &&
+                hover < BUILTIN_ENTRY_COUNT + (int)files_get_pins(NULL, 0)) {
+                /* Alpha on a pinned dock icon unpins it (Files' Alpha menu pins) */
+                files_pin_t pins[FILES_MAX_PINS];
+                files_get_pins(pins, FILES_MAX_PINS);
+                (void)files_set_pin(&pins[hover - BUILTIN_ENTRY_COUNT], false);
+                if (files_take_pins_changed()) sync_dock_pins();
+                if (dock_focus >= entry_count) dock_focus = entry_count - 1;
+                hover = -1;
+                dirty = true;
+            } else if (open_app == APP_FILES && PRESSED(2, kb_Alpha) &&
                 files_alpha())
                 dirty = true;
             if (PRESSED(6, kb_Enter) || PRESSED(1, kb_2nd)) {
@@ -1254,6 +1727,11 @@ static int shell_main(void)
                             handled = apps[open_app].focus_press();
                         else if (apps[open_app].press)
                             handled = apps[open_app].press();
+                    } else if (desk_focus >= 0) {   /* launches on release (desk_key_release) */
+                        desk_key_press = true;
+                        desk_key_moved = false;
+                        handled = true;
+                        full_redraw = false;
                     } else if (dock_focus >= 0 && dock_focus < entry_count) {
                         launch(&entries[dock_focus]);
                         handled = true;
@@ -1261,6 +1739,10 @@ static int shell_main(void)
                 } else {
                     handled = open_app == APP_FILES && files_menu_active() &&
                               files_press();
+                    if (!handled && start_press(hover)) {   /* desktop / dock pin: on release */
+                        handled = true;
+                        full_redraw = false;
+                    }
                 }
                 if (!keyboard_focus && !handled)
                     handled = open_app >= 0 && in_window() && !on_close &&
@@ -1276,8 +1758,19 @@ static int shell_main(void)
                     bool click_in_app = !handled && open_app >= 0 && in_window() &&
                                         !on_close && cur_y >= WIN_Y + TITLE_H &&
                                         apps[open_app].dirty;
+                    bool on_tile = !handled && open_app == APP_FILES && in_window() &&
+                                   cur_y >= WIN_Y + TITLE_H &&
+                                   files_tile_pin_at(cur_x - WIN_X, cur_y - (WIN_Y + TITLE_H),
+                                                     &press_pin);
                     if (!handled)
                         do_click(hover);
+                    if (on_tile && open_app == APP_FILES) {   /* may become a drag */
+                        press_kind = 3;
+                        press_x = cur_x;
+                        press_y = cur_y;
+                        dragging = false;
+                        press_pin_icon = false;
+                    }
                     if (click_in_app && open_app == app_before) {
                         collect_app_dirty();        /* e.g. the selected button changed */
                         full_redraw = false;
@@ -1285,27 +1778,10 @@ static int shell_main(void)
                 }
                 if (full_redraw) dirty = true;
 
-                /* A program was clicked again in Files? */
-                if (open_app == APP_FILES) {
-                    const char *prgm;
-                    void *app_header;
-                    uint8_t program_kind, var_type;
-                    if (files_take_launch_request(&prgm, &app_header,
-                                                  &program_kind, &var_type)) {
-                        flush_pins_before_launch();
-                        if (app_header) {
-                            end_graphics();
-                            flash_apps_launch(app_header);
-                        }
-#ifdef SHELL_FLASH_APP
-                        end_graphics();
-                        asm_runProgram_run(prgm, var_type, program_kind,
-                                           program_runner_preferences);
-#else
-                        run_program(prgm);
-#endif
-                    }
-                }
+                /* A program was clicked again in Files? (a press on a tile launches on
+                 * release instead, unless it turns into a drag: step_press) */
+                if (open_app == APP_FILES && press_kind != 3)
+                    files_launch_pending();
                 if (files_take_pins_changed()) {
                     sync_dock_pins();
                     dirty = true;
@@ -1330,6 +1806,12 @@ static int shell_main(void)
                 last_hover = hover;
             }
 
+            if (press_kind && step_press()) dirty = true;
+            if (desk_key_press && desk_key_release()) dirty = true;
+            if (desktop_take_changed()) {             /* Files pin menu, Del */
+                desktop_load_icons();
+                dirty = true;
+            }
             render_frame(hover, dirty);
             if (!booted) {
                 /* NEW: the first frame is on screen, so the start survived:

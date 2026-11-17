@@ -15,6 +15,7 @@
 #include "notes.h"
 #include "settings.h"
 #include "ui_text.h"
+#define fill_round_rect ui_fill_round   /* shared copy in ui_text.c */
 #include "program_kind.h"
 #include "debug_stack.h"
 
@@ -322,15 +323,6 @@ static void print_clipped(const char *s, int len, int x, int y, int max_w)
     ui_print(buf, x, y);
 }
 
-static void fill_round_rect(int x, int y, int w, int h, int r)
-{
-    gfx_FillRectangle(x + r, y, w - 2 * r, h);
-    gfx_FillRectangle(x, y + r, w, h - 2 * r);
-    gfx_FillCircle(x + r, y + r, r);
-    gfx_FillCircle(x + w - r - 1, y + r, r);
-    gfx_FillCircle(x + r, y + h - r - 1, r);
-    gfx_FillCircle(x + w - r - 1, y + h - r - 1, r);
-}
 
 static void draw_row(int x, int y, int r, bool hot)
 {
